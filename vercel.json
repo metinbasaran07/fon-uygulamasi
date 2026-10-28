@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "rewrites": [
+    {
+      "source": "/api/tefas/:match*",
+      "destination": "/api/tefas.js"
+    },
+    {
+      "source": "/api/tefas",
+      "destination": "/api/tefas.js"
+    },
+    {
+      "source": "/api/gemini/:match*",
+      "destination": "/api/gemini.js"
+    },
+    {
+      "source": "/api/gemini",
+      "destination": "/api/gemini.js"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}
