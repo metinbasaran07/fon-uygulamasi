@@ -18,7 +18,7 @@ export const Header: React.FC<HeaderProps> = ({
     <>
       {/* Top Header */}
       <header className="border-b border-slate-800/80 bg-slate-950/90 backdrop-blur-md sticky top-0 z-30">
-        <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 h-14 sm:h-16 flex items-center justify-between">
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 h-14 sm:h-16 flex items-center justify-between relative">
           {/* Brand: Fontables */}
           <div className="flex items-center gap-2 sm:gap-2.5">
             <div className="h-8 w-8 sm:h-9 sm:w-9 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0">
@@ -33,8 +33,8 @@ export const Header: React.FC<HeaderProps> = ({
             </div>
           </div>
 
-          {/* Desktop Central Tab Navigation (Hidden on Mobile) */}
-          <div className="hidden md:flex items-center bg-slate-900 p-1 rounded-xl border border-slate-800 gap-1">
+          {/* Desktop Central Tab Navigation (Centered) */}
+          <div className="hidden md:flex items-center absolute left-1/2 -translate-x-1/2 bg-slate-900 p-1 rounded-xl border border-slate-800 gap-1 shadow-sm">
             <button
               onClick={() => onTabChange('analysis')}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${

@@ -28,6 +28,10 @@ interface PortfolioViewProps {
   onRemoveHolding: (id: string) => void;
   onSelectFundForAnalysis: (fonKodu: string) => void;
   latestPricesMap: Record<string, number>;
+  dailyChangesMap?: Record<
+    string,
+    { currentPrice: number; prevPrice: number; dailyChangeTL: number; dailyChangePercent: number }
+  >;
   onAddTransaction: (holdingId: string, tx: PortfolioTransaction) => void;
   onDeleteTransaction: (holdingId: string, txId: string) => void;
 }
@@ -39,13 +43,17 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({
   onRemoveHolding,
   onSelectFundForAnalysis,
   latestPricesMap,
+  dailyChangesMap,
   onAddTransaction,
   onDeleteTransaction,
 }) => {
   const [selectedTxHolding, setSelectedTxHolding] = useState<PortfolioHolding | null>(null);
 
-  // Historical Date Profit feature state
-  const [valuationDate, setValuationDate] = useState<'today' | '1w' | '1m' | '3m' | 'ytd' | 'custom'>('today');
+  // Midas-style toggle: 'daily' (Günlük) or 'total' (Toplam)
+  const [displayMode, setDisplayMode] = useState<'daily' | 'total'>('daily');
+
+  // Historical Date Profit feature state ("Tarihe Göre Göster")
+  const [valuationDate, setValuationDate] = useState<'today' | '1w' | '1m' | '3m' | '1y' | 'ytd' | 'custom'>('today');
   const [customDate, setCustomDate] = useState(() => {
     const d = new Date();
     d.setMonth(d.getMonth() - 1);
@@ -57,14 +65,23 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({
     let toplamDeger = 0;
     let toplamMaliyet = 0;
     let toplamTahminiStopajTL = 0;
+    let toplamGunlukDegisimTL = 0;
 
     const list: PortfolioHoldingCalculated[] = holdings.map((h) => {
       const meta = fundsList.find((f) => f.fonKodu === h.fonKodu);
-      const livePrice = latestPricesMap[h.fonKodu] || h.alisFiyati;
+      const dailyInfo = dailyChangesMap?.[h.fonKodu];
+      const livePrice = dailyInfo?.currentPrice || latestPricesMap[h.fonKodu] || h.alisFiyati;
       const deg = h.adet * livePrice;
       const mal = h.adet * h.alisFiyati;
       const kzTL = deg - mal;
       const kzPct = mal > 0 ? (kzTL / mal) * 100 : 0;
+
+      // Real TEFAS daily price difference for this holding
+      const prevP = dailyInfo?.prevPrice ?? (dailyInfo?.currentPrice ? dailyInfo.currentPrice - dailyInfo.dailyChangeTL : livePrice);
+      const fundDailyPct = dailyInfo?.dailyChangePercent ?? 0;
+      const fundDailyTL = h.adet * (livePrice - prevP);
+
+      toplamGunlukDegisimTL += fundDailyTL;
 
       const stopaj = getFundStopajInfo(h.fonUnvan, h.kategori || meta?.fonTurAciklama);
       const estTax = kzTL > 0 && !stopaj.isExempt ? kzTL * 0.1 : 0;
@@ -84,6 +101,8 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({
         tahminiStopajTL: estTax,
         netDegerTL: deg - estTax,
         kategori: h.kategori || meta?.fonTurAciklama || 'Yatırım Fonu',
+        gunlukDegisimTL: fundDailyTL,
+        gunlukDegisimYuzde: fundDailyPct,
       };
     });
 
@@ -94,6 +113,11 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({
     const toplamKarZararTL = toplamDeger - toplamMaliyet;
     const toplamKarZararYuzde =
       toplamMaliyet > 0 ? (toplamKarZararTL / toplamMaliyet) * 100 : 0;
+
+    // Total portfolio daily percentage
+    const prevTotalDeger = toplamDeger - toplamGunlukDegisimTL;
+    const toplamGunlukDegisimYuzde =
+      prevTotalDeger > 0 ? (toplamGunlukDegisimTL / prevTotalDeger) * 100 : 0;
 
     // Category breakdown
     const catMap: Record<string, number> = {};
@@ -119,7 +143,6 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({
       pastValuationMultiplier = 0.99; // approx week return adjustment
     } else if (valuationDate === '1m') {
       periodLabel = '1 Ay';
-      // Average 1m return of funds in portfolio
       let weightedReturn = 0;
       list.forEach((it) => {
         const meta = fundsList.find((f) => f.fonKodu === it.fonKodu);
@@ -136,6 +159,15 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({
         weightedReturn += (Number(r3a) * it.portfoyOrani) / 100;
       });
       pastValuationMultiplier = 1 / (1 + weightedReturn / 100);
+    } else if (valuationDate === '1y') {
+      periodLabel = '1 Yıl';
+      let weightedReturn = 0;
+      list.forEach((it) => {
+        const meta = fundsList.find((f) => f.fonKodu === it.fonKodu);
+        const r1y = meta?.getiri1y ?? 38;
+        weightedReturn += (Number(r1y) * it.portfoyOrani) / 100;
+      });
+      pastValuationMultiplier = 1 / (1 + weightedReturn / 100);
     } else if (valuationDate === 'ytd') {
       periodLabel = 'Yılbaşı (YTD)';
       let weightedReturn = 0;
@@ -147,7 +179,6 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({
       pastValuationMultiplier = 1 / (1 + weightedReturn / 100);
     } else if (valuationDate === 'custom') {
       periodLabel = customDate;
-      // Calculate months diff
       const past = new Date(customDate);
       const now = new Date();
       const months = Math.max(0.5, (now.getTime() - past.getTime()) / (1000 * 3600 * 24 * 30));
@@ -175,6 +206,8 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({
         toplamTahminiStopajTL,
         netToplamDegerTL: toplamDeger - toplamTahminiStopajTL,
         holdingCount: holdings.length,
+        toplamGunlukDegisimTL,
+        toplamGunlukDegisimYuzde,
       },
       categoryAllocation,
       historicalMetrics: {
@@ -184,7 +217,7 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({
         periodLabel,
       },
     };
-  }, [holdings, fundsList, latestPricesMap, valuationDate, customDate]);
+  }, [holdings, fundsList, latestPricesMap, dailyChangesMap, valuationDate, customDate]);
 
   const isProfit = summary.toplamKarZararTL >= 0;
 
@@ -295,12 +328,12 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({
         </div>
       </div>
 
-      {/* Historical Date Valuation Tool (Belirlenen Tarihteki Kâr) */}
+      {/* Historical Date Valuation Tool (Tarihe Göre Göster) */}
       <div className="bg-slate-900/70 border border-slate-800 rounded-xl p-3 sm:p-4 space-y-2.5">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
           <div className="flex items-center gap-1.5 text-xs text-white font-bold">
             <Calendar className="w-3.5 h-3.5 text-emerald-400" />
-            <span>Tarihe Göre Değerleme &amp; Kâr Takibi</span>
+            <span>Tarihe Göre Göster</span>
           </div>
 
           {/* Quick Date Filters */}
@@ -310,6 +343,7 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({
               { id: '1w', label: '1 Hafta' },
               { id: '1m', label: '1 Ay' },
               { id: '3m', label: '3 Ay' },
+              { id: '1y', label: '1 Yıl' },
               { id: 'ytd', label: 'Yılbaşı (YTD)' },
               { id: 'custom', label: 'Özel Tarih' },
             ].map((p) => (
@@ -414,97 +448,158 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({
         </div>
       )}
 
-      {/* Holdings List: Responsive Cards for Mobile & Table for Desktop */}
+      {/* Midas-Style Holdings List: Responsive Cards for Mobile & Table for Desktop */}
       <div className="bg-slate-900/70 border border-slate-800 rounded-xl overflow-hidden shadow-sm">
+        {/* Section Header with Midas-style toggle */}
         <div className="p-3 sm:p-4 border-b border-slate-800 flex items-center justify-between">
-          <h3 className="font-bold text-white text-xs sm:text-sm">Varlıklar &amp; İşlem Geçmişi</h3>
-          <span className="text-[11px] tabular-nums text-slate-400">
-            {calculatedHoldings.length} Kalem
-          </span>
+          <div className="flex items-center gap-2">
+            <h3 className="font-bold text-white text-sm sm:text-base tracking-tight">Yatırım Fonları</h3>
+            <span className="text-[11px] tabular-nums text-slate-500 hidden sm:inline">
+              ({calculatedHoldings.length})
+            </span>
+          </div>
+
+          {/* Right Header Status: Total or Daily Net Gain/Loss + Midas Toggle Button */}
+          <div className="flex items-center gap-2 sm:gap-3">
+            <div className="text-right tabular-nums">
+              <span
+                className={`text-xs sm:text-sm font-bold ${
+                  (displayMode === 'daily' ? summary.toplamGunlukDegisimTL >= 0 : summary.toplamKarZararTL >= 0)
+                    ? 'text-emerald-400'
+                    : 'text-rose-400'
+                }`}
+              >
+                {displayMode === 'daily'
+                  ? `(%${summary.toplamGunlukDegisimYuzde.toFixed(2)})`
+                  : `(%${summary.toplamKarZararYuzde.toFixed(2)})`}
+              </span>
+            </div>
+
+            {/* Toggle Switch Button: "Günlük ◄►" or "Toplam ◄►" */}
+            <button
+              onClick={() => setDisplayMode(displayMode === 'daily' ? 'total' : 'daily')}
+              className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-950 hover:bg-slate-800 text-slate-200 border border-slate-700/80 text-[11px] font-bold cursor-pointer transition-all shadow-sm select-none"
+              title="Günlük ve Toplam görünümü arasında geçiş yapmak için tıklayın"
+            >
+              <span className={displayMode === 'daily' ? 'text-emerald-400' : 'text-cyan-400'}>
+                {displayMode === 'daily' ? 'Günlük' : 'Toplam'}
+              </span>
+              <span className="text-slate-500 text-[10px]">◄►</span>
+            </button>
+          </div>
         </div>
 
-        {/* Mobile View: Compact Holding Cards */}
+        {/* Mobile View: Midas-Style Compact Holding Rows */}
         <div className="block lg:hidden divide-y divide-slate-800/80">
-          {calculatedHoldings.map((item) => {
-            const itemIsProfit = item.karZararTL >= 0;
+          {calculatedHoldings.map((item, idx) => {
+            const isDailyPos = item.gunlukDegisimTL >= 0;
+            const isTotalPos = item.karZararTL >= 0;
             const txCount = item.islemler?.length || 0;
             const itemTaxInfo = getFundStopajInfo(item.fonUnvan, item.kategori);
+
+            // Midas-style avatar colors
+            const avatarGradients = [
+              'from-indigo-600 to-purple-600',
+              'from-blue-600 to-cyan-600',
+              'from-rose-600 to-orange-600',
+              'from-emerald-600 to-teal-600',
+              'from-amber-600 to-yellow-600',
+            ];
+            const gradient = avatarGradients[idx % avatarGradients.length];
+
             return (
-              <div key={item.id} className="p-3 space-y-2">
+              <div key={item.id} className="p-3 hover:bg-slate-850/40 transition-colors">
                 <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      onClick={() => onSelectFundForAnalysis(item.fonKodu)}
-                      className="font-bold text-white text-sm hover:text-emerald-400 tabular-nums"
+                  {/* Left: Avatar + Fund Code + Name */}
+                  <div className="flex items-center gap-2.5 min-w-0 flex-1 pr-2">
+                    <div
+                      className={`w-9 h-9 rounded-full bg-gradient-to-br ${gradient} flex items-center justify-center text-white font-extrabold text-xs shadow-sm shrink-0`}
                     >
-                      {item.fonKodu}
-                    </button>
-                    <span className="text-[10px] px-1.5 py-0.2 rounded bg-slate-950 border border-slate-800 text-slate-400 max-w-[110px] truncate">
-                      {item.kategori}
+                      {item.fonKodu.slice(0, 2)}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={() => onSelectFundForAnalysis(item.fonKodu)}
+                          className="font-black text-white text-sm hover:text-emerald-400 tabular-nums transition-colors cursor-pointer"
+                        >
+                          {item.fonKodu}
+                        </button>
+                        <span
+                          className={`text-[9px] px-1.5 py-0.2 rounded tabular-nums font-semibold border ${
+                            itemTaxInfo.isExempt
+                              ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                              : 'bg-amber-500/10 text-amber-400 border-amber-500/30'
+                          }`}
+                        >
+                          {itemTaxInfo.rate === 0 ? '%0' : '%10'}
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-slate-400 font-medium truncate max-w-[170px]">
+                        {item.fonUnvan}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Right: Midas-Style Value + (Daily or Total) Return */}
+                  <div className="text-right tabular-nums shrink-0">
+                    <div className="text-sm font-bold text-white tracking-tight">
+                      ₺{item.toplamDeger.toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </div>
+
+                    {displayMode === 'daily' ? (
+                      /* Daily return view */
+                      <div
+                        className={`text-xs font-semibold ${
+                          isDailyPos ? 'text-emerald-400' : 'text-rose-400'
+                        }`}
+                      >
+                        {isDailyPos ? '+' : ''}₺{item.gunlukDegisimTL.toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ({isDailyPos ? '+' : ''}%{item.gunlukDegisimYuzde.toFixed(2)})
+                      </div>
+                    ) : (
+                      /* Total return view */
+                      <div
+                        className={`text-xs font-semibold ${
+                          isTotalPos ? 'text-emerald-400' : 'text-rose-400'
+                        }`}
+                      >
+                        {isTotalPos ? '+' : ''}₺{item.karZararTL.toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ({isTotalPos ? '+' : ''}%{item.karZararYuzde.toFixed(2)})
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Sub-row: Share count, price & actions */}
+                <div className="flex items-center justify-between pt-2 mt-2 border-t border-slate-800/60 text-[10px] tabular-nums text-slate-400">
+                  <div className="flex items-center gap-3">
+                    <span>
+                      Pay: <strong className="text-slate-200">{item.adet.toLocaleString('tr-TR')}</strong>
                     </span>
-                    <span
-                      className={`text-[9px] px-1.5 py-0.2 rounded tabular-nums font-semibold border ${
-                        itemTaxInfo.isExempt
-                          ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
-                          : 'bg-amber-500/10 text-amber-400 border-amber-500/30'
-                      }`}
-                      title={itemTaxInfo.description}
-                    >
-                      {itemTaxInfo.rate === 0 ? '%0' : '%10'}
+                    <span>
+                      Fiyat: <strong className="text-slate-200">₺{item.guncelFiyat.toFixed(4)}</strong>
                     </span>
                   </div>
-                  <div
-                    className={`text-xs tabular-nums font-bold ${
-                      itemIsProfit ? 'text-emerald-400' : 'text-rose-400'
-                    }`}
-                  >
-                    {itemIsProfit ? '+' : ''}₺{item.karZararTL.toLocaleString('tr-TR', { maximumFractionDigits: 1 })} (
-                    {itemIsProfit ? '+' : ''}%{item.karZararYuzde.toFixed(1)})
-                  </div>
-                </div>
-
-                <div className="text-[11px] text-slate-300 font-medium truncate">
-                  {item.fonUnvan}
-                </div>
-
-                <div className="grid grid-cols-3 gap-2 text-[10px] tabular-nums bg-slate-950/60 p-2 rounded-lg border border-slate-800/70">
-                  <div>
-                    <span className="text-slate-500 block">Pay</span>
-                    <span className="text-white font-semibold">{item.adet.toLocaleString('tr-TR')}</span>
-                  </div>
-                  <div>
-                    <span className="text-slate-500 block">Güncel / Maliyet</span>
-                    <span className="text-white font-semibold">₺{item.guncelFiyat.toFixed(4)}</span>
-                  </div>
-                  <div>
-                    <span className="text-slate-500 block">Piyasa Değeri</span>
-                    <span className="text-white font-bold">₺{item.toplamDeger.toLocaleString('tr-TR', { maximumFractionDigits: 0 })}</span>
-                  </div>
-                </div>
-
-                {/* Mobile Actions: Add Transaction & Delete */}
-                <div className="flex items-center justify-between pt-1 text-xs">
-                  <button
-                    onClick={() => setSelectedTxHolding(item)}
-                    className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-750 text-slate-200 border border-slate-700/80 text-[11px] font-semibold flex items-center gap-1 cursor-pointer"
-                  >
-                    <History className="w-3 h-3 text-emerald-400" />
-                    <span>İşlemler ({txCount})</span>
-                  </button>
 
                   <div className="flex items-center gap-2">
                     <button
-                      onClick={() => onSelectFundForAnalysis(item.fonKodu)}
-                      className="px-2 py-1 rounded bg-slate-950 text-slate-300 hover:text-emerald-400 text-[11px] cursor-pointer"
+                      onClick={() => setSelectedTxHolding(item)}
+                      className="px-2 py-0.5 rounded bg-slate-800 text-slate-300 hover:text-white flex items-center gap-1 cursor-pointer font-medium"
                     >
-                      Analiz Et
+                      <History className="w-2.5 h-2.5 text-emerald-400" />
+                      <span>İşlemler ({txCount})</span>
+                    </button>
+                    <button
+                      onClick={() => onSelectFundForAnalysis(item.fonKodu)}
+                      className="px-2 py-0.5 rounded bg-slate-950 text-slate-400 hover:text-emerald-400 cursor-pointer font-medium"
+                    >
+                      Analiz
                     </button>
                     <button
                       onClick={() => onRemoveHolding(item.id)}
                       className="p-1 text-slate-500 hover:text-rose-400 cursor-pointer"
                       title="Sil"
                     >
-                      <Trash2 className="w-3.5 h-3.5" />
+                      <Trash2 className="w-3 h-3" />
                     </button>
                   </div>
                 </div>
@@ -513,7 +608,7 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({
           })}
         </div>
 
-        {/* Desktop View: Full Table */}
+        {/* Desktop View: Full Table with Günlük/Toplam Toggle */}
         <div className="hidden lg:block overflow-x-auto">
           <table className="w-full text-left text-xs tabular-nums divide-y divide-slate-800">
             <thead className="bg-slate-950/60 text-slate-400 uppercase text-[10px] tracking-wider">
@@ -522,42 +617,61 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({
                 <th className="py-2.5 px-3 text-right">Pay Adedi</th>
                 <th className="py-2.5 px-3 text-right">Maliyet / Güncel</th>
                 <th className="py-2.5 px-3 text-right">Piyasa Değeri</th>
-                <th className="py-2.5 px-3 text-right">Kâr / Zarar</th>
+                <th className="py-2.5 px-3 text-right">
+                  {displayMode === 'daily' ? 'Günlük Değişim' : 'Toplam Kâr / Zarar'}
+                </th>
                 <th className="py-2.5 px-3 text-right">Ağırlık</th>
                 <th className="py-2.5 px-4 text-center">İşlemler</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/60 text-slate-300">
-              {calculatedHoldings.map((item) => {
-                const itemIsProfit = item.karZararTL >= 0;
+              {calculatedHoldings.map((item, idx) => {
+                const isDailyPos = item.gunlukDegisimTL >= 0;
+                const isTotalPos = item.karZararTL >= 0;
                 const txCount = item.islemler?.length || 0;
                 const itemTaxInfo = getFundStopajInfo(item.fonUnvan, item.kategori);
+
+                const avatarGradients = [
+                  'from-indigo-600 to-purple-600',
+                  'from-blue-600 to-cyan-600',
+                  'from-rose-600 to-orange-600',
+                  'from-emerald-600 to-teal-600',
+                  'from-amber-600 to-yellow-600',
+                ];
+                const gradient = avatarGradients[idx % avatarGradients.length];
+
                 return (
                   <tr key={item.id} className="hover:bg-slate-850/50 transition-colors">
                     <td className="py-2.5 px-4">
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => onSelectFundForAnalysis(item.fonKodu)}
-                          className="font-bold text-white hover:text-emerald-400 transition-colors cursor-pointer text-sm tabular-nums"
+                      <div className="flex items-center gap-2.5">
+                        <div
+                          className={`w-7 h-7 rounded-full bg-gradient-to-br ${gradient} flex items-center justify-center text-white font-extrabold text-[10px] shadow-sm shrink-0`}
                         >
-                          {item.fonKodu}
-                        </button>
-                        <span className="text-[10px] text-slate-400 px-1.5 py-0.2 rounded bg-slate-950 border border-slate-800">
-                          {item.kategori}
-                        </span>
-                        <span
-                          className={`text-[9px] px-1.5 py-0.2 rounded tabular-nums font-semibold border ${
-                            itemTaxInfo.isExempt
-                              ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
-                              : 'bg-amber-500/10 text-amber-400 border-amber-500/30'
-                          }`}
-                          title={itemTaxInfo.description}
-                        >
-                          {itemTaxInfo.label}
-                        </span>
-                      </div>
-                      <div className="text-[11px] text-slate-400 font-sans truncate max-w-xs mt-0.5">
-                        {item.fonUnvan}
+                          {item.fonKodu.slice(0, 2)}
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => onSelectFundForAnalysis(item.fonKodu)}
+                              className="font-bold text-white hover:text-emerald-400 transition-colors cursor-pointer text-sm tabular-nums"
+                            >
+                              {item.fonKodu}
+                            </button>
+                            <span
+                              className={`text-[9px] px-1.5 py-0.2 rounded tabular-nums font-semibold border ${
+                                itemTaxInfo.isExempt
+                                  ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                                  : 'bg-amber-500/10 text-amber-400 border-amber-500/30'
+                              }`}
+                              title={itemTaxInfo.description}
+                            >
+                              {itemTaxInfo.label}
+                            </span>
+                          </div>
+                          <div className="text-[11px] text-slate-400 font-sans truncate max-w-xs mt-0.5">
+                            {item.fonUnvan}
+                          </div>
+                        </div>
                       </div>
                     </td>
 
@@ -578,13 +692,27 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({
                       ₺{item.toplamDeger.toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </td>
 
+                    {/* Dynamic Column: Günlük or Toplam */}
                     <td className="py-2.5 px-3 text-right">
-                      <div className={`font-bold ${itemIsProfit ? 'text-emerald-400' : 'text-rose-400'}`}>
-                        {itemIsProfit ? '+' : ''}₺{item.karZararTL.toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                      </div>
-                      <div className={`text-[10px] ${itemIsProfit ? 'text-emerald-400/80' : 'text-rose-400/80'}`}>
-                        {itemIsProfit ? '+' : ''}%{item.karZararYuzde.toFixed(2)}
-                      </div>
+                      {displayMode === 'daily' ? (
+                        <div>
+                          <div className={`font-bold ${isDailyPos ? 'text-emerald-400' : 'text-rose-400'}`}>
+                            {isDailyPos ? '+' : ''}₺{item.gunlukDegisimTL.toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </div>
+                          <div className={`text-[10px] ${isDailyPos ? 'text-emerald-400/80' : 'text-rose-400/80'}`}>
+                            {isDailyPos ? '+' : ''}%{item.gunlukDegisimYuzde.toFixed(2)}
+                          </div>
+                        </div>
+                      ) : (
+                        <div>
+                          <div className={`font-bold ${isTotalPos ? 'text-emerald-400' : 'text-rose-400'}`}>
+                            {isTotalPos ? '+' : ''}₺{item.karZararTL.toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </div>
+                          <div className={`text-[10px] ${isTotalPos ? 'text-emerald-400/80' : 'text-rose-400/80'}`}>
+                            {isTotalPos ? '+' : ''}%{item.karZararYuzde.toFixed(2)}
+                          </div>
+                        </div>
+                      )}
                     </td>
 
                     <td className="py-2.5 px-3 text-right text-slate-300 font-semibold">

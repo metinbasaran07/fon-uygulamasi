@@ -28,26 +28,20 @@ export interface SellTaxCalculation {
 
 export function getFundStopajInfo(fonUnvan?: string, kategori?: string): FundStopajInfo {
   const unvan = (fonUnvan || '').toUpperCase();
-  const kat = (kategori || '').toUpperCase();
 
-  // Hisse senedi yoğun fonlar kanunen %0 stopaja tabidir
-  const isHisse =
-    kat.includes('HİSSE') ||
-    kat.includes('HISSE') ||
-    unvan.includes('HİSSE SENEDİ') ||
-    unvan.includes('HISSE SENEDI') ||
-    unvan.includes('HİSSE SENEDİ YOĞUN') ||
-    unvan.includes('HISSE SENEDI YOGUN') ||
-    unvan.includes('KATILIM HİSSE') ||
-    unvan.includes('BIST') ||
-    unvan.includes('ENDEKS');
+  // TEFAS ve Resmi Gelir Vergisi Mevzuatı:
+  // Portföyünün en az %80'ini Borsa İstanbul paylarında tutan ve TEFAS unvanında tescilli olarak
+  // "(HİSSE SENEDİ YOĞUN FON)" ibaresi yer alan fonlar kanunen %0 Stopaja tabidir (Tam Muafiyet).
+  // Yabancı Hisse Senedi fonları (AFA, AFV, TFF vb.), Altın/Kıymetli Madenler (KZL vb.),
+  // Para Piyasası, Borçlanma Araçları ve Değişken fonlar mevzuat gereği %10 stopaja tabidir.
+  const isHisseYogun = unvan.includes('YOĞUN') || unvan.includes('YOGUN');
 
-  if (isHisse) {
+  if (isHisseYogun) {
     return {
       rate: 0,
       label: '%0 Stopaj (Muaf)',
       isExempt: true,
-      description: 'Hisse Senedi Yoğun Fon statüsünde olduğundan getiriler %0 stopaja tabidir (Tam Muafiyet).',
+      description: 'TEFAS resmi tescilli Hisse Senedi Yoğun Fon statüsünde olduğundan getiriler %0 stopaja tabidir (Tam Muafiyet).',
     };
   }
 
@@ -56,7 +50,7 @@ export function getFundStopajInfo(fonUnvan?: string, kategori?: string): FundSto
     rate: 10,
     label: '%10 Stopaj',
     isExempt: false,
-    description: 'Satış anında elde edilen kâr üzerinden %10 oranında stopaj vergisi kesintisi uygulanır.',
+    description: 'TEFAS mevzuatı: Satış anında elde edilen kâr üzerinden yasal %10 stopaj kesintisi uygulanır.',
   };
 }
 

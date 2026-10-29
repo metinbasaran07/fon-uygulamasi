@@ -7,7 +7,7 @@ interface ScoreCardProps {
 }
 
 export const ScoreCard: React.FC<ScoreCardProps> = ({ scores }) => {
-  const radius = 48;
+  const radius = 45;
   const circumference = 2 * Math.PI * radius;
   const strokeDashoffset = circumference - (scores.totalScore / 100) * circumference;
 
@@ -23,14 +23,14 @@ export const ScoreCard: React.FC<ScoreCardProps> = ({ scores }) => {
 
       {/* Main Score Display */}
       <div className="my-3.5 flex items-center justify-center gap-5">
-        <div className="relative flex items-center justify-center">
+        <div className="relative flex items-center justify-center p-1">
           <svg className="w-28 h-28 transform -rotate-90 overflow-visible" viewBox="0 0 120 120">
             <circle
               cx="60"
               cy="60"
               r={radius}
               stroke="currentColor"
-              strokeWidth="8"
+              strokeWidth="7"
               className="text-slate-800/70"
               fill="transparent"
             />
@@ -39,7 +39,7 @@ export const ScoreCard: React.FC<ScoreCardProps> = ({ scores }) => {
               cy="60"
               r={radius}
               stroke={scores.gradeColor}
-              strokeWidth="8"
+              strokeWidth="7"
               strokeDasharray={circumference}
               strokeDashoffset={strokeDashoffset}
               strokeLinecap="round"

@@ -112,21 +112,17 @@ app.get('/api/tefas/profile/:code', async (req, res) => {
       return res.json({ success: false, message: 'Profil verisi bulunamadı.' });
     }
 
-    // Determine stopaj rate based on live official TEFAS fund title & details
+    // TEFAS ve Gelir Vergisi Kanunu uyarınca:
+    // Yalnızca resmi unvanında "(HİSSE SENEDİ YOĞUN FON)" ibaresi olan fonlar %0 stopaja tabidir.
+    // Yabancı hisse (AFA vb.), Altın/Kıymetli Madenler (KZL vb.), Para Piyasası ve Değişken fonlar %10 stopaja tabidir.
     const unvan = (profile.fonUnvan || '').toUpperCase();
-    const isHisseYogun =
-      unvan.includes('HİSSE SENEDİ YOĞUN') ||
-      unvan.includes('HISSE SENEDI YOGUN') ||
-      unvan.includes('KATILIM HİSSE') ||
-      unvan.includes('KATILIM HISSE') ||
-      unvan.includes('ENDEKS HİSSE') ||
-      unvan.includes('BIST');
+    const isHisseYogun = unvan.includes('YOĞUN') || unvan.includes('YOGUN');
 
     const stopajRate = isHisseYogun ? 0 : 10;
     const stopajLabel = isHisseYogun ? '%0 Stopaj (Muaf)' : '%10 Stopaj';
     const stopajDesc = isHisseYogun
-      ? 'Hisse Senedi Yoğun Fon statüsünde olduğundan getiriler TEFAS mevzuatı uyarınca %0 stopaja tabidir.'
-      : 'Satış anında kâr üzerinden yasal %10 stopaj kesintisi uygulanır.';
+      ? 'Resmi TEFAS tescili: Hisse Senedi Yoğun Fon statüsünde olduğundan getiriler kanunen %0 stopaja tabidir.'
+      : 'Resmi TEFAS tescili: Satış anında kâr üzerinden yasal %10 stopaj kesintisi uygulanır.';
 
     return res.json({
       success: true,
@@ -141,6 +137,69 @@ app.get('/api/tefas/profile/:code', async (req, res) => {
   } catch (error: any) {
     console.warn('TEFAS Profile fetch error:', error.message);
     return res.status(500).json({ error: error.message || 'TEFAS profil verisi alınamadı.' });
+  }
+});
+
+// 1.2 TEFAS Daily Batch for Portfolio Holdings (Real Daily Changes & Prices)
+app.post('/api/tefas/daily-batch', async (req, res) => {
+  try {
+    const { codes = [] } = req.body;
+    if (!Array.isArray(codes) || codes.length === 0) {
+      return res.json({ success: true, results: {} });
+    }
+
+    const cleanCodes = Array.from(new Set(codes.map((c) => String(c).toUpperCase().trim())));
+    const results: Record<
+      string,
+      {
+        currentPrice: number;
+        prevPrice: number;
+        dailyChangeTL: number;
+        dailyChangePercent: number;
+      }
+    > = {};
+
+    await Promise.all(
+      cleanCodes.map(async (code) => {
+        try {
+          const resp = await fetch('https://www.tefas.gov.tr/api/funds/fonFiyatBilgiGetir', {
+            method: 'POST',
+            headers: TEFAS_HEADERS,
+            body: JSON.stringify({ fonKodu: code, dil: 'TR', periyod: 1 }),
+          });
+          if (!resp.ok) return;
+          const data = await resp.json();
+          const list = data.resultList || [];
+          if (list.length >= 2) {
+            const cur = Number(list[list.length - 1].fiyat);
+            const prev = Number(list[list.length - 2].fiyat);
+            const diff = cur - prev;
+            const pct = prev > 0 ? (diff / prev) * 100 : 0;
+            results[code] = {
+              currentPrice: cur,
+              prevPrice: prev,
+              dailyChangeTL: diff,
+              dailyChangePercent: pct,
+            };
+          } else if (list.length === 1) {
+            const cur = Number(list[0].fiyat);
+            results[code] = {
+              currentPrice: cur,
+              prevPrice: cur,
+              dailyChangeTL: 0,
+              dailyChangePercent: 0,
+            };
+          }
+        } catch (e) {
+          // ignore individual fetch errors
+        }
+      })
+    );
+
+    return res.json({ success: true, results });
+  } catch (err: any) {
+    console.warn('TEFAS Daily Batch fetch error:', err.message);
+    return res.status(500).json({ error: 'Günlük fiyat verisi alınamadı.' });
   }
 });
 

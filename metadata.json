@@ -2,5 +2,7 @@
   "name": "Fontables",
   "description": "TEFAS yatırım fonlarını teknik analiz, 0-100 puanlama ve yapay zeka portföy asistanı ile inceleyen modern fintech terminali.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }

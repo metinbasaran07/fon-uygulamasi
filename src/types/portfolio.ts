@@ -33,6 +33,8 @@ export interface PortfolioHoldingCalculated extends PortfolioHolding {
   toplamOdenenStopajTL?: number;
   tahminiStopajTL?: number;
   netDegerTL?: number;
+  gunlukDegisimTL: number; // Günlük fark TL (adet * günlük birim fiyat farkı)
+  gunlukDegisimYuzde: number; // Günlük yüzde değişim (%)
 }
 
 export interface PortfolioSummary {
@@ -43,4 +45,6 @@ export interface PortfolioSummary {
   toplamTahminiStopajTL: number;
   netToplamDegerTL: number;
   holdingCount: number;
+  toplamGunlukDegisimTL: number;
+  toplamGunlukDegisimYuzde: number;
 }

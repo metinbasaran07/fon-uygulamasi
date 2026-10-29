@@ -33,6 +33,12 @@ export default function App() {
   const [fundAnalysis, setFundAnalysis] = useState<FundAnalysisResult | null>(null);
   const [liveProfile, setLiveProfile] = useState<any>(null);
   const [latestPricesMap, setLatestPricesMap] = useState<Record<string, number>>({});
+  const [dailyChangesMap, setDailyChangesMap] = useState<
+    Record<
+      string,
+      { currentPrice: number; prevPrice: number; dailyChangeTL: number; dailyChangePercent: number }
+    >
+  >({});
   const [isLoadingFund, setIsLoadingFund] = useState<boolean>(true);
   const [errorNotice, setErrorNotice] = useState<string | null>(null);
 
@@ -95,6 +101,30 @@ export default function App() {
     kategori?: string;
     guncelFiyat?: number;
   } | null>(null);
+
+  // Fetch real TEFAS daily batch data (daily returns & prices) for portfolio holdings
+  useEffect(() => {
+    const codes = holdings.map((h) => h.fonKodu).filter(Boolean);
+    if (codes.length === 0) return;
+
+    fetch('/api/tefas/daily-batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ codes }),
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.success && data.results) {
+          setDailyChangesMap((prev) => ({ ...prev, ...data.results }));
+          const priceUpdates: Record<string, number> = {};
+          Object.entries(data.results).forEach(([c, info]: [string, any]) => {
+            if (info?.currentPrice) priceUpdates[c] = info.currentPrice;
+          });
+          setLatestPricesMap((prev) => ({ ...prev, ...priceUpdates }));
+        }
+      })
+      .catch((err) => console.warn('Daily batch fetch notice:', err));
+  }, [holdings]);
 
   // Save holdings to localStorage
   useEffect(() => {
@@ -376,6 +406,7 @@ export default function App() {
             onRemoveHolding={handleRemoveHolding}
             onSelectFundForAnalysis={handleSelectFund}
             latestPricesMap={latestPricesMap}
+            dailyChangesMap={dailyChangesMap}
             onAddTransaction={handleAddTransaction}
             onDeleteTransaction={handleDeleteTransaction}
           />

@@ -12,7 +12,6 @@ export const FUND_CATEGORIES = [
   'Tümü',
   'Hisse Senedi',
   'Değişken',
-  'Katılım',
   'Para Piyasası',
   'Kıymetli Madenler',
   'Fon Sepeti',
