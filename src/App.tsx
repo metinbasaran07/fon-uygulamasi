@@ -54,7 +54,7 @@ export default function App() {
       {
         id: 'TI2',
         fonKodu: 'TI2',
-        fonUnvan: 'İŞ PORTFÖY HİSSE SENEDİ (TL) FONU',
+        fonUnvan: 'İŞ PORTFÖY HİSSE SENEDİ (TL) FONU (HİSSE SENEDİ YOĞUN FON)',
         kategori: 'Hisse Senedi Şemsiye Fonu',
         adet: 15000,
         alisFiyati: 0.1042,
@@ -154,6 +154,30 @@ export default function App() {
     fetchFundsList();
   }, [fetchFundsList]);
 
+  // Synchronize holdings with official TEFAS titles & categories when fundsList loads
+  useEffect(() => {
+    if (fundsList.length === 0) return;
+    setHoldings((prev) => {
+      let changed = false;
+      const updated = prev.map((h) => {
+        const meta = fundsList.find((f) => f.fonKodu === h.fonKodu);
+        if (
+          meta &&
+          (h.fonUnvan !== meta.fonUnvan || (meta.fonTurAciklama && h.kategori !== meta.fonTurAciklama))
+        ) {
+          changed = true;
+          return {
+            ...h,
+            fonUnvan: meta.fonUnvan,
+            kategori: meta.fonTurAciklama || h.kategori,
+          };
+        }
+        return h;
+      });
+      return changed ? updated : prev;
+    });
+  }, [fundsList]);
+
   // 2. Fetch price history and perform quant calculations
   const loadFundAnalysis = useCallback(
     async (code: string, period: number) => {
@@ -239,13 +263,20 @@ export default function App() {
     }
   };
 
-  const handleSaveHolding = (newHolding: PortfolioHolding, tx?: PortfolioTransaction) => {
+  const handleSaveHolding = (newHolding: PortfolioHolding, tx?: PortfolioTransaction, latestPrice?: number) => {
+    if (latestPrice && latestPrice > 0) {
+      setLatestPricesMap((prev) => ({
+        ...prev,
+        [newHolding.fonKodu]: latestPrice,
+      }));
+    }
+
     setHoldings((prev) => {
       const existingIdx = prev.findIndex((h) => h.fonKodu === newHolding.fonKodu);
       const transaction = tx || {
         id: `tx-${Date.now()}`,
         type: 'BUY',
-        tarih: new Date().toISOString().split('T')[0],
+        tarih: newHolding.tarih || new Date().toISOString().split('T')[0],
         adet: newHolding.adet,
         fiyat: newHolding.alisFiyati,
         toplamTutar: Math.round(newHolding.adet * newHolding.alisFiyati * 100) / 100,
@@ -287,6 +318,25 @@ export default function App() {
         ...prev,
       ];
     });
+
+    // Also trigger daily batch update for this new holding so daily change TL & pct are populated
+    fetch('/api/tefas/daily-batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ codes: [newHolding.fonKodu] }),
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.success && data.results) {
+          setDailyChangesMap((prev) => ({ ...prev, ...data.results }));
+          const priceUpdates: Record<string, number> = {};
+          Object.entries(data.results).forEach(([c, info]: [string, any]) => {
+            if (info?.currentPrice) priceUpdates[c] = info.currentPrice;
+          });
+          setLatestPricesMap((prev) => ({ ...prev, ...priceUpdates }));
+        }
+      })
+      .catch((err) => console.warn('Daily batch update notice:', err));
   };
 
   const handleRemoveHolding = (id: string) => {
@@ -294,7 +344,14 @@ export default function App() {
   };
 
   // Add Buy or Sell Transaction to existing holding
-  const handleAddTransaction = (holdingId: string, tx: PortfolioTransaction) => {
+  const handleAddTransaction = (holdingId: string, tx: PortfolioTransaction, latestPrice?: number) => {
+    if (latestPrice && latestPrice > 0) {
+      setLatestPricesMap((prev) => ({
+        ...prev,
+        [holdingId]: latestPrice,
+      }));
+    }
+
     setHoldings((prev) => {
       return prev.map((h) => {
         if (h.id === holdingId || h.fonKodu === holdingId) {

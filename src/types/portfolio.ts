@@ -31,8 +31,10 @@ export interface PortfolioHoldingCalculated extends PortfolioHolding {
   karZararYuzde: number;
   portfoyOrani: number; // %
   toplamOdenenStopajTL?: number;
-  tahminiStopajTL?: number;
-  netDegerTL?: number;
+  tahminiStopajTL: number;
+  stopajSonrasiNetKarTL: number; // Stopaj hesaplanmış (düşülmüş) net kâr
+  stopajSonrasiNetKarYuzde: number; // Stopaj hesaplanmış getiri yüzdesi
+  netDegerTL: number;
   gunlukDegisimTL: number; // Günlük fark TL (adet * günlük birim fiyat farkı)
   gunlukDegisimYuzde: number; // Günlük yüzde değişim (%)
 }
@@ -43,8 +45,11 @@ export interface PortfolioSummary {
   toplamKarZararTL: number;
   toplamKarZararYuzde: number;
   toplamTahminiStopajTL: number;
+  stopajSonrasiNetKarTL: number; // Stopaj hesaplanmış net kâr (₺)
+  stopajSonrasiNetKarYuzde: number; // Stopaj hesaplanmış net getiri (%)
   netToplamDegerTL: number;
   holdingCount: number;
   toplamGunlukDegisimTL: number;
   toplamGunlukDegisimYuzde: number;
 }
+

@@ -2,6 +2,7 @@ import React from 'react';
 import { FundAnalysisResult } from '../types/tefas';
 import { ArrowUpRight, ArrowDownRight, Plus, Percent, Award } from 'lucide-react';
 import { getFundStopajInfo } from '../utils/taxEngine';
+import { FundCompanyLogo } from './FundCompanyLogo';
 
 interface FundOverviewCardProps {
   fund: FundAnalysisResult;
@@ -40,7 +41,9 @@ export const FundOverviewCard: React.FC<FundOverviewCardProps> = ({
     <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-3 sm:p-4 shadow-sm">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800/80">
         <div>
-          <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <FundCompanyLogo fonKodu={fund.fonKodu} fonUnvan={fund.fonUnvan} size="md" />
+
             {/* Fund Code */}
             <span className="text-xl sm:text-2xl font-black tabular-nums tracking-tight text-white bg-slate-950 px-2.5 py-0.5 rounded-lg border border-slate-800">
               {fund.fonKodu}

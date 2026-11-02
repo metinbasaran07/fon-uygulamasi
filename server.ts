@@ -3,6 +3,7 @@ import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import https from 'https';
 
 dotenv.config();
 
@@ -19,12 +20,144 @@ let cachedFundList: any[] = [];
 let fundListCachedAt = 0;
 const CACHE_TTL = 15 * 60 * 1000; // 15 minutes
 
-const TEFAS_HEADERS = {
-  'User-Agent':
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-  'Content-Type': 'application/json',
-  Accept: 'application/json, text/plain, */*',
-};
+// Takasbank TEFAS Custom HTTPS Agent (TLS 1.2 + Browser Ciphers required by TEFAS WAF)
+const tefasAgent = new https.Agent({
+  minVersion: 'TLSv1.2',
+  maxVersion: 'TLSv1.2',
+  ciphers: 'ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES128-GCM-SHA256',
+  keepAlive: true,
+});
+
+let cachedCookies = '';
+let cookiesTimestamp = 0;
+const COOKIE_TTL = 10 * 60 * 1000; // 10 minutes
+
+function getTefasCookies(forceRefresh = false): Promise<string> {
+  const now = Date.now();
+  if (!forceRefresh && cachedCookies && now - cookiesTimestamp < COOKIE_TTL) {
+    return Promise.resolve(cachedCookies);
+  }
+
+  return new Promise((resolve) => {
+    const req = https.get(
+      'https://www.tefas.gov.tr/',
+      {
+        agent: tefasAgent,
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7',
+        },
+      },
+      (res) => {
+        const rawCookies = res.headers['set-cookie'] || [];
+        const cookieStr = rawCookies.map((c) => c.split(';')[0]).join('; ');
+        res.resume(); // drain response
+        if (cookieStr) {
+          cachedCookies = cookieStr;
+          cookiesTimestamp = Date.now();
+        }
+        resolve(cachedCookies);
+      }
+    );
+    req.on('error', (err) => {
+      console.warn('Cookie fetch warning:', err.message);
+      resolve(cachedCookies);
+    });
+    req.setTimeout(6000, () => {
+      req.destroy();
+      resolve(cachedCookies);
+    });
+  });
+}
+
+function callTefasApi(endpoint: string, payload: any, retry = true): Promise<any> {
+  return getTefasCookies().then((cookies) => {
+    const postData = JSON.stringify(payload);
+
+    return new Promise((resolve, reject) => {
+      const req = https.request(
+        {
+          hostname: 'www.tefas.gov.tr',
+          path: `/api/funds/${endpoint}`,
+          method: 'POST',
+          agent: tefasAgent,
+          headers: {
+            'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'Content-Type': 'application/json',
+            Accept: 'application/json, text/plain, */*',
+            Referer: 'https://www.tefas.gov.tr/TarihselVeriler.aspx',
+            Origin: 'https://www.tefas.gov.tr',
+            Cookie: cookies,
+            'Content-Length': Buffer.byteLength(postData),
+          },
+        },
+        (res) => {
+          let body = '';
+          res.on('data', (chunk) => (body += chunk));
+          res.on('end', async () => {
+            if (res.statusCode === 200) {
+              try {
+                const parsed = JSON.parse(body);
+                return resolve(parsed);
+              } catch (e) {
+                return reject(new Error('TEFAS verisi ayrıştırılamadı.'));
+              }
+            }
+
+            if (retry) {
+              await getTefasCookies(true);
+              try {
+                const retryRes = await callTefasApi(endpoint, payload, false);
+                return resolve(retryRes);
+              } catch (retryErr) {
+                return reject(retryErr);
+              }
+            }
+
+            reject(new Error(`TEFAS API hatası (${res.statusCode})`));
+          });
+        }
+      );
+
+      req.on('error', async (err) => {
+        if (retry) {
+          await getTefasCookies(true);
+          try {
+            const retryRes = await callTefasApi(endpoint, payload, false);
+            return resolve(retryRes);
+          } catch (retryErr) {
+            return reject(retryErr);
+          }
+        }
+        reject(err);
+      });
+
+      req.setTimeout(8000, () => {
+        req.destroy(new Error('TEFAS sunucu yanıt vermedi (Zaman aşımı)'));
+      });
+
+      req.write(postData);
+      req.end();
+    });
+  });
+}
+
+function parseTefasDate(raw: any): Date {
+  if (typeof raw === 'number' || (!isNaN(Number(raw)) && String(raw).length > 8)) {
+    return new Date(Number(raw));
+  }
+  const s = String(raw || '').trim();
+  if (s.includes('.')) {
+    const parts = s.split('.');
+    if (parts.length === 3) {
+      return new Date(`${parts[2]}-${parts[1]}-${parts[0]}`);
+    }
+  }
+  return new Date(s);
+}
 
 // 1. TEFAS Fund History (Prices & Dates)
 app.post('/api/tefas/history', async (req, res) => {
@@ -40,18 +173,16 @@ app.post('/api/tefas/history', async (req, res) => {
     let chosenPeriod = validPeriods.includes(periodNum) ? periodNum : 12;
 
     const fetchHistory = async (p: number) => {
-      const response = await fetch('https://www.tefas.gov.tr/api/funds/fonFiyatBilgiGetir', {
-        method: 'POST',
-        headers: TEFAS_HEADERS,
-        body: JSON.stringify({
+      try {
+        const data = await callTefasApi('fonFiyatBilgiGetir', {
           fonKodu: cleanCode,
           dil: 'TR',
           periyod: p,
-        }),
-      });
-      if (!response.ok) return [];
-      const data = await response.json();
-      return data.resultList || [];
+        });
+        return data?.resultList || [];
+      } catch (e) {
+        return [];
+      }
     };
 
     let resultList = await fetchHistory(chosenPeriod);
@@ -83,6 +214,107 @@ app.post('/api/tefas/history', async (req, res) => {
   }
 });
 
+// 1.05 Price on Specific Date (Automatic Price Lookup for Past Purchases)
+app.post('/api/tefas/price-on-date', async (req, res) => {
+  try {
+    const { fonKodu, tarih } = req.body;
+    if (!fonKodu) {
+      return res.status(400).json({ error: 'Fon kodu gereklidir.' });
+    }
+
+    const cleanCode = String(fonKodu).toUpperCase().trim();
+    const todayYMD = new Date().toISOString().split('T')[0];
+    const targetDateStr = tarih ? String(tarih).trim() : todayYMD;
+    const targetDateObj = new Date(targetDateStr);
+    const targetTime = isNaN(targetDateObj.getTime()) ? Date.now() : targetDateObj.getTime();
+    const targetYMD = isNaN(targetDateObj.getTime()) ? todayYMD : targetDateObj.toISOString().split('T')[0];
+
+    // Determine how many days in the past the target date is
+    const now = Date.now();
+    const diffDays = Math.max(1, Math.ceil((now - targetTime) / (1000 * 3600 * 24)));
+
+    let period = 1;
+    if (diffDays > 25) period = 3;
+    if (diffDays > 85) period = 6;
+    if (diffDays > 175) period = 12;
+    if (diffDays > 360) period = 36;
+    if (diffDays > 1050) period = 60;
+
+    const data = await callTefasApi('fonFiyatBilgiGetir', {
+      fonKodu: cleanCode,
+      dil: 'TR',
+      periyod: period,
+    });
+
+    const list: any[] = data?.resultList || [];
+
+    if (list.length === 0) {
+      return res.json({ success: false, message: 'Bu fon için geçmiş fiyat verisi bulunamadı.' });
+    }
+
+    // Sort ascending by date
+    list.sort((a, b) => parseTefasDate(a.tarih).getTime() - parseTefasDate(b.tarih).getTime());
+
+    const latestItem = list[list.length - 1];
+    const latestPrice = Number(latestItem.fiyat);
+    const latestDateYMD = parseTefasDate(latestItem.tarih).toISOString().split('T')[0];
+
+    // If requested date is today or in the future, return latest price
+    if (targetYMD >= latestDateYMD) {
+      return res.json({
+        success: true,
+        fonKodu: cleanCode,
+        requestedDate: targetYMD,
+        resolvedDate: latestDateYMD,
+        price: latestPrice,
+        latestPrice,
+        isExactMatch: true,
+        isLatest: true,
+        fonUnvan: latestItem.fonUnvan || undefined,
+      });
+    }
+
+    // Find exact date match
+    let matchedItem = list.find((item) => {
+      const d = parseTefasDate(item.tarih).toISOString().split('T')[0];
+      return d === targetYMD;
+    });
+
+    let isExactMatch = !!matchedItem;
+
+    // If no exact match (e.g., weekend or official holiday), find the latest date on or before targetYMD
+    if (!matchedItem) {
+      const eligible = list.filter((item) => {
+        const d = parseTefasDate(item.tarih).toISOString().split('T')[0];
+        return d <= targetYMD;
+      });
+      if (eligible.length > 0) {
+        matchedItem = eligible[eligible.length - 1];
+      } else {
+        matchedItem = list[0];
+      }
+    }
+
+    const price = Number(matchedItem.fiyat);
+    const resolvedDate = parseTefasDate(matchedItem.tarih).toISOString().split('T')[0];
+
+    return res.json({
+      success: true,
+      fonKodu: cleanCode,
+      requestedDate: targetYMD,
+      resolvedDate,
+      price,
+      latestPrice,
+      isExactMatch,
+      isLatest: false,
+      fonUnvan: matchedItem.fonUnvan || latestItem.fonUnvan,
+    });
+  } catch (error: any) {
+    console.warn('price-on-date error:', error.message);
+    return res.status(500).json({ error: error.message || 'Geçmiş fiyat alınamadı' });
+  }
+});
+
 // 1.1 TEFAS Live Fund Profile & Stopaj Data
 app.get('/api/tefas/profile/:code', async (req, res) => {
   try {
@@ -92,37 +324,39 @@ app.get('/api/tefas/profile/:code', async (req, res) => {
     }
     const cleanCode = code.toUpperCase().trim();
 
-    const response = await fetch('https://www.tefas.gov.tr/api/funds/fonProfilBilgiGetir', {
-      method: 'POST',
-      headers: TEFAS_HEADERS,
-      body: JSON.stringify({
-        fonKodu: cleanCode,
-        dil: 'TR',
-      }),
+    const data = await callTefasApi('fonProfilBilgiGetir', {
+      fonKodu: cleanCode,
+      dil: 'TR',
     });
 
-    if (!response.ok) {
-      return res.status(response.status).json({ error: 'TEFAS profil servisine ulaşılamadı.' });
-    }
-
-    const data = await response.json();
-    const profile = data.resultList?.[0] || null;
+    const profile = data?.resultList?.[0] || null;
 
     if (!profile) {
       return res.json({ success: false, message: 'Profil verisi bulunamadı.' });
     }
 
-    // TEFAS ve Gelir Vergisi Kanunu uyarınca:
-    // Yalnızca resmi unvanında "(HİSSE SENEDİ YOĞUN FON)" ibaresi olan fonlar %0 stopaja tabidir.
-    // Yabancı hisse (AFA vb.), Altın/Kıymetli Madenler (KZL vb.), Para Piyasası ve Değişken fonlar %10 stopaja tabidir.
-    const unvan = (profile.fonUnvan || '').toUpperCase();
-    const isHisseYogun = unvan.includes('YOĞUN') || unvan.includes('YOGUN');
+    const unvan = (profile.fonUnvan || '').toLocaleUpperCase('tr-TR');
+    const isForeign = unvan.includes('YABANCI');
+    const isSerbest = unvan.includes('SERBEST');
+    const isEurobond = unvan.includes('EUROBOND');
+    const hasYogunKeyword = unvan.includes('YOĞUN') || unvan.includes('YOGUN');
+    const hasHisseKeyword =
+      (unvan.includes('HİSSE') ||
+        unvan.includes('HISSE') ||
+        unvan.includes('BİST') ||
+        unvan.includes('BIST')) &&
+      !isForeign &&
+      !isEurobond;
+    const isHisseYogun = (hasYogunKeyword || hasHisseKeyword) && !isForeign && !isSerbest;
 
-    const stopajRate = isHisseYogun ? 0 : 10;
-    const stopajLabel = isHisseYogun ? '%0 Stopaj (Muaf)' : '%10 Stopaj';
+    const stopajRate = isHisseYogun ? 0 : 17.5;
+    const stopajLabel = isHisseYogun ? '%0 Stopaj (Muaf)' : '%17,5 Stopaj';
+    const legalBasis = isHisseYogun
+      ? 'GVK Geçici 67. Madde / TEFAS Hisse Senedi Yoğun Fon Muafiyeti'
+      : "Resmi Gazete Cumhurbaşkanı Kararı & GVK Geçici 67. Madde (%17,5 Düzenlemesi)";
     const stopajDesc = isHisseYogun
-      ? 'Resmi TEFAS tescili: Hisse Senedi Yoğun Fon statüsünde olduğundan getiriler kanunen %0 stopaja tabidir.'
-      : 'Resmi TEFAS tescili: Satış anında kâr üzerinden yasal %10 stopaj kesintisi uygulanır.';
+      ? 'Resmi TEFAS tescili: Hisse Senedi Yoğun Fon statüsünde olduğundan getiriler kanunen %0 stopaja tabidir (Tam Muafiyet).'
+      : "Resmi Gazete'de yayımlanan güncel Cumhurbaşkanı Kararı ve GİB Geçici 67 mevzuatı gereği satış anında kâr üzerinden yasal %17,5 stopaj kesintisi uygulanır.";
 
     return res.json({
       success: true,
@@ -132,6 +366,7 @@ app.get('/api/tefas/profile/:code', async (req, res) => {
         stopajLabel,
         isStopajExempt: isHisseYogun,
         stopajDesc,
+        legalBasis,
       },
     });
   } catch (error: any) {
@@ -162,14 +397,12 @@ app.post('/api/tefas/daily-batch', async (req, res) => {
     await Promise.all(
       cleanCodes.map(async (code) => {
         try {
-          const resp = await fetch('https://www.tefas.gov.tr/api/funds/fonFiyatBilgiGetir', {
-            method: 'POST',
-            headers: TEFAS_HEADERS,
-            body: JSON.stringify({ fonKodu: code, dil: 'TR', periyod: 1 }),
+          const data = await callTefasApi('fonFiyatBilgiGetir', {
+            fonKodu: code,
+            dil: 'TR',
+            periyod: 1,
           });
-          if (!resp.ok) return;
-          const data = await resp.json();
-          const list = data.resultList || [];
+          const list = data?.resultList || [];
           if (list.length >= 2) {
             const cur = Number(list[list.length - 1].fiyat);
             const prev = Number(list[list.length - 2].fiyat);
@@ -206,7 +439,6 @@ app.post('/api/tefas/daily-batch', async (req, res) => {
 // 2. TEFAS Fund List & Returns
 app.all(['/api/tefas/list', '/api/tefas'], async (req, res) => {
   try {
-    // If query or body has fonKodu, route to single fund fetch
     const fonKodu = req.query.fonKodu || req.body?.fonKodu;
     const periyod = req.query.periyod || req.body?.periyod;
 
@@ -215,26 +447,17 @@ app.all(['/api/tefas/list', '/api/tefas'], async (req, res) => {
       const periodNum = Number(periyod || 12);
       const chosenPeriod = validPeriods.includes(periodNum) ? periodNum : 12;
 
-      const response = await fetch('https://www.tefas.gov.tr/api/funds/fonFiyatBilgiGetir', {
-        method: 'POST',
-        headers: TEFAS_HEADERS,
-        body: JSON.stringify({
-          fonKodu: String(fonKodu).toUpperCase().trim(),
-          dil: 'TR',
-          periyod: chosenPeriod,
-        }),
+      const data = await callTefasApi('fonFiyatBilgiGetir', {
+        fonKodu: String(fonKodu).toUpperCase().trim(),
+        dil: 'TR',
+        periyod: chosenPeriod,
       });
 
-      if (!response.ok) {
-        throw new Error(`TEFAS API hatası: ${response.status}`);
-      }
-
-      const data = await response.json();
       return res.json({
         success: true,
         fonKodu: String(fonKodu).toUpperCase().trim(),
         periyod: chosenPeriod,
-        resultList: data.resultList || [],
+        resultList: data?.resultList || [],
       });
     }
 
@@ -243,38 +466,29 @@ app.all(['/api/tefas/list', '/api/tefas'], async (req, res) => {
       return res.json({ success: true, count: cachedFundList.length, list: cachedFundList });
     }
 
-    const response = await fetch('https://www.tefas.gov.tr/api/funds/fonGetiriBazliBilgiGetir', {
-      method: 'POST',
-      headers: TEFAS_HEADERS,
-      body: JSON.stringify({
-        dil: 'TR',
-        fonTipi: 'YAT',
-        kurucuKodu: null,
-        sfonTurKod: null,
-        fonTurAciklama: null,
-        islem: 1,
-        fonTurKod: null,
-        fonGrubu: null,
-        donemGetiri1a: '1',
-        donemGetiri3a: '1',
-        donemGetiri6a: '1',
-        donemGetiri1y: '1',
-        donemGetiriyb: '1',
-        donemGetiri3y: '1',
-        donemGetiri5y: '1',
-        basTarih: null,
-        bitTarih: null,
-        calismaTipi: 2,
-        getiriOrani: '1',
-      }),
+    const data = await callTefasApi('fonGetiriBazliBilgiGetir', {
+      dil: 'TR',
+      fonTipi: 'YAT',
+      kurucuKodu: null,
+      sfonTurKod: null,
+      fonTurAciklama: null,
+      islem: 1,
+      fonTurKod: null,
+      fonGrubu: null,
+      donemGetiri1a: '1',
+      donemGetiri3a: '1',
+      donemGetiri6a: '1',
+      donemGetiri1y: '1',
+      donemGetiriyb: '1',
+      donemGetiri3y: '1',
+      donemGetiri5y: '1',
+      basTarih: null,
+      bitTarih: null,
+      calismaTipi: 2,
+      getiriOrani: '1',
     });
 
-    if (!response.ok) {
-      throw new Error(`TEFAS Liste API hatası: ${response.status}`);
-    }
-
-    const data = await response.json();
-    const list = data.resultList || [];
+    const list = data?.resultList || [];
     cachedFundList = list;
     fundListCachedAt = now;
 
@@ -326,12 +540,19 @@ app.post('/api/gemini/analyze', async (req, res) => {
       },
     });
 
+    const isHisseYogun = (fonUnvan || '').toUpperCase().includes('YOĞUN') || (fonUnvan || '').toUpperCase().includes('YOGUN');
+    const dynamicStopajRate = isHisseYogun ? 0 : 17.5;
+    const dynamicStopajBasis = isHisseYogun
+      ? 'GVK Geçici 67. Madde uyarınca %0 Stopaj (Tam Muaf)'
+      : "Resmi Gazete'de yayımlanan güncel Cumhurbaşkanı Kararı uyarınca %17,5 Stopaj";
+
     const prompt = `Sen uzman bir Fintek Teknik Analisti ve Portföy Matematikçisisin.
 Aşağıda TEFAS'tan çekilen gerçek tarihsel verilerle hesaplanmış fon teknik göstergeleri ve matematiksel puanlama sonuçları verilmiştir:
 
 FON KODU: ${fonKodu}
 FON UNVANI: ${fonUnvan || 'Belirtilmedi'}
 KATEGORİ: ${kategori || 'Yatırım Fonu'}
+MEVZUAT STOPAJ DURUMU: ${dynamicStopajBasis}
 GÜNCEL FİYAT: ${guncelFiyat ? guncelFiyat + ' TL' : 'Mevcut'}
 RSI (14 GÜNLÜK): ${rsi14 !== undefined ? rsi14 : 'Hesaplanamadı'}
 SMA 20: ${sma20 || '-'} | SMA 50: ${sma50 || '-'}
@@ -342,17 +563,21 @@ MAX DRAWDOWN (EN BÜYÜK DÜŞÜŞ): ${maxDrawdown ? '%' + maxDrawdown : '-'}
 TOPLAM MATEMATİKSEL SKOR: ${toplamPuan || '-'} / 100 (${puanRozeti || '-'})
 DÖNEMSEL GETİRİLER: 1 Ay: %${getiriler?.getiri1a ?? '-'}, 3 Ay: %${getiriler?.getiri3a ?? '-'}, 6 Ay: %${getiriler?.getiri6a ?? '-'}, 1 Yıl: %${getiriler?.getiri1y ?? '-'}
 
+DİNAMİK STOPAJ DOKTRİNİ VE NET GETİRİ STANDARDI:
+- Net Getiri formülü: Net Getiri = Brüt Getiri * (1 - Stopaj / 100).
+- Bu fon için yürürlükteki Resmi Gazete ve GVK Geçici 67 mevzuatı uyarınca stopaj oranı: %${dynamicStopajRate} (${dynamicStopajBasis}).
+
 GÖREVİN:
 Bu fonun teknik analiz göstergelerini ve puanlama algoritması sonucunu inceleyerek KESİNLİKLE "Al", "Sat", "Hemen girin" veya "Çıkın" gibi bir yatırım tavsiyesi VERMEDEN, kullanıcıya tam olarak 3 MADDELİK OBJEKTİF TEKNİK VE MATEMATİKSEL DURUM TESPİTİ ÖZETİ hazırla:
 
 Madde 1: Fiyat Trendi ve Momentum Durumu (RSI ve SMA 20/50 ilişkisine göre aşırı alım/satım veya trend yönü tespiti).
 Madde 2: Oynaklık ve Risk-Getiri Dengesi (Yıllık volatilite, Max Drawdown derinliği ve Sharpe oranı bazında sermaye koruma/dalgalanma analizi).
-Madde 3: Algoritmik Skor Değerlendirmesi ve Önemli İzleme Seviyeleri (0-100 puanın arka planındaki güçlü ve zayıf taraflar ile teknik göstergelerin işaret ettiği kritik seviyeler).
+Madde 3: Algoritmik Skor Değerlendirmesi, Net Getiri & Stopaj Bilgisi (0-100 puanın arka planı ile yürürlükteki mevzuat stopaj oranı %${dynamicStopajRate} ve getiriye yansıması).
 
 Biçimlendirme Kuralları:
 - Sadece 3 madde halinde madde işaretleri (- veya 1, 2, 3) kullanarak yaz.
 - Dil Türkçe, net, profesyonel, finansal jargona hakim ve akıcı olsun.
-- Asla spekülatif veya sübjektif konuşma, sadece verilen matematiksel verilere dayan.
+- Asla spekülatif veya sübjektif konuşma, sadece verilen matematiksel verilere ve resmi mevzuata dayan.
 - Sonuna kısa bir "Bilgilendirme: Matematiksel modelleme çıktısıdır, yatırım tavsiyesi içermez." notu düş.`;
 
     let responseText = '';
@@ -435,13 +660,19 @@ Kullanıcının canlı portföy durumu şöyledir:
 - Portföydeki Fonlar:
 ${holdingsText || 'Henüz portföyde fon bulunmuyor.'}
 
+DİNAMİK STOPAJ DOKTRİNİ VE RESMİ MEVZUAT KURALLARI:
+1. Hisse Senedi Yoğun Fonlar (unvanında '(HİSSE SENEDİ YOĞUN FON)' olanlar): GVK Geçici 67. Madde kapsamında %0 Stopaja tabidir (Tam Muaf).
+2. Diğer Fonlar (Yabancı, Borçlanma, Değişken, Kıymetli Madenler/Altın, Serbest vb.): Bireysel yatırımcılar için Resmi Gazete'de yayımlanan güncel Cumhurbaşkanı Kararları uyarınca %17,5 Stopaja tabidir.
+3. Net Getiri Formülü: Net Getiri = Brüt Getiri * (1 - Anlık_Mevzuat_Stopajı / 100).
+4. Vergi/stopaj sorularında veya net getiri hesaplamalarında Resmi Gazete ve GİB dayanağını açıkça belirt.
+
 KULLANICININ SORUSU VEYA TALEBİ:
 "${message}"
 
 GÖREVİN:
 1. Kullanıcının sorusunu finansal bir uzman titizliğiyle, net, anlaşılır ve akıcı Türkçe ile yanıtla.
-2. Portföy analizi isteniyorsa; varlık dağılımı (Hisse, Değişken, Katılım/Faizsiz, Altın, Para Piyasası), yoğunlaşma riski, getiri potansiyeli ve dengeleme stratejileri hakkında objektif değerlendirme yap.
-3. Genel fonlar, stopaj vergileri, fon seçimi veya katılım fonları soruluyorsa eğitici ve açıklayıcı bilgi ver.
+2. Portföy analizi isteniyorsa; varlık dağılımı (Hisse, Değişken, Katılım/Faizsiz, Altın, Para Piyasası), yoğunlaşma riski, getiri potansiyeli ve stopaj sonrası net getiri hakkında objektif değerlendirme yap.
+3. Genel fonlar, stopaj vergileri, fon seçimi veya katılım fonları soruluyorsa güncel mevzuatı referans göstererek eğitici bilgi ver.
 4. Kesinlikle spekülatif "Al/Sat" tavsiyesi verme, risk-getiri prensipleri çerçevesinde matematiksel ve yapısal değerlendirmeler sun.
 5. Yanıtı maddeler halinde, göz yormayan, okunaklı bir formatta yaz.`;
 

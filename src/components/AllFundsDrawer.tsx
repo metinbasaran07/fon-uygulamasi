@@ -2,6 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { TefasListRaw } from '../types/tefas';
 import { X, Search, Check, ChevronRight, Award, ArrowUpDown, Filter } from 'lucide-react';
 import { FUND_CATEGORIES } from './FundSearch';
+import { FundCompanyLogo } from './FundCompanyLogo';
 
 interface AllFundsDrawerProps {
   isOpen: boolean;
@@ -312,6 +313,9 @@ export const AllFundsDrawer: React.FC<AllFundsDrawerProps> = ({
                 >
                   <div className="flex-1 pr-3 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
+                      {/* Company Logo */}
+                      <FundCompanyLogo fonKodu={fund.fonKodu} fonUnvan={fund.fonUnvan} size="sm" />
+
                       {/* Fund Code */}
                       <span className="font-extrabold text-xs text-white bg-slate-900 px-2 py-0.5 rounded-md border border-slate-800 tabular-nums">
                         {fund.fonKodu}

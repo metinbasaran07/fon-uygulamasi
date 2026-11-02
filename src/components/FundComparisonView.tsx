@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { TefasListRaw, FundAnalysisResult, TefasPriceRaw } from '../types/tefas';
 import { analyzeFundData } from '../utils/quantEngine';
 import { getFundStopajInfo } from '../utils/taxEngine';
+import { FundCompanyLogo } from './FundCompanyLogo';
 import { Plus, X, Search, GitCompare, Award, Activity, TrendingUp, ShieldAlert, Zap, RefreshCw } from 'lucide-react';
 
 interface FundComparisonViewProps {
@@ -171,6 +172,7 @@ export const FundComparisonView: React.FC<FundComparisonViewProps> = ({
               className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800 text-xs font-mono"
             >
               <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: color }} />
+              <FundCompanyLogo fonKodu={code} fonUnvan={fundsData[code]?.fonUnvan} size="sm" />
               <button
                 onClick={() => onSelectFundForAnalysis(code)}
                 className="font-bold text-white hover:text-emerald-400 transition-colors cursor-pointer"
@@ -283,6 +285,7 @@ export const FundComparisonView: React.FC<FundComparisonViewProps> = ({
                   <th key={code} className="py-2.5 px-3 text-right">
                     <div className="flex items-center justify-end gap-1.5">
                       <span className="w-2 h-2 rounded-full" style={{ backgroundColor: lineColors[idx % lineColors.length] }} />
+                      <FundCompanyLogo fonKodu={code} fonUnvan={fundsData[code]?.fonUnvan} size="sm" />
                       <span className="font-bold text-white text-xs">{code}</span>
                     </div>
                   </th>
