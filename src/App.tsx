@@ -178,25 +178,36 @@ export default function App() {
     });
   }, [fundsList]);
 
-  // 2. Fetch price history and perform quant calculations
+  // 2. Fetch price history and perform quant calculations with automatic retry
   const loadFundAnalysis = useCallback(
     async (code: string, period: number) => {
       setIsLoadingFund(true);
       setErrorNotice(null);
 
-      try {
-        const response = await fetch('/api/tefas/history', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ fonKodu: code, periyod: period }),
-        });
+      const doFetch = async (retry = true): Promise<any> => {
+        try {
+          const response = await fetch('/api/tefas/history', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fonKodu: code, periyod: period }),
+          });
 
-        if (!response.ok) {
-          const errData = await response.json().catch(() => ({}));
-          throw new Error(errData.error || `TEFAS servisine ulaşılamadı (${response.status})`);
+          if (!response.ok) {
+            const errData = await response.json().catch(() => ({}));
+            throw new Error(errData.error || `TEFAS servisine ulaşılamadı (${response.status})`);
+          }
+          return await response.json();
+        } catch (e: any) {
+          if (retry) {
+            await new Promise((r) => setTimeout(r, 800));
+            return doFetch(false);
+          }
+          throw e;
         }
+      };
 
-        const data = await response.json();
+      try {
+        const data = await doFetch(true);
         const rawPrices: TefasPriceRaw[] = data.resultList || [];
 
         if (rawPrices.length === 0) {
@@ -227,7 +238,15 @@ export default function App() {
         }
       } catch (err: any) {
         console.warn('Fund analysis load notice:', err.message);
-        setErrorNotice(err.message || 'Fon verisi yüklenirken bir sorun oluştu.');
+        let msg = err.message || 'Fon verisi yüklenirken bir sorun oluştu.';
+        if (
+          msg.includes('fetch failed') ||
+          msg.includes('Failed to fetch') ||
+          msg.includes('Load failed')
+        ) {
+          msg = 'TEFAS sunucularına geçici olarak ulaşılamadı. Takasbank kaynaklı anlık bir gecikme olabilir.';
+        }
+        setErrorNotice(msg);
       } finally {
         setIsLoadingFund(false);
       }
@@ -427,17 +446,30 @@ export default function App() {
       <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 py-3 sm:py-5 pb-20 md:pb-6 space-y-3 sm:space-y-4">
         {/* Subtle, Non-blocking Error Notice */}
         {errorNotice && (
-          <div className="p-2.5 sm:p-3 rounded-xl bg-slate-900 border border-slate-800 text-slate-300 flex items-center justify-between text-xs animate-in fade-in duration-150">
-            <div className="flex items-center gap-2">
+          <div className="p-2.5 sm:p-3 rounded-xl bg-slate-900 border border-slate-800 text-slate-300 flex items-center justify-between text-xs animate-in fade-in duration-150 gap-3">
+            <div className="flex items-center gap-2 min-w-0">
               <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
-              <span>{errorNotice}</span>
+              <span className="truncate sm:whitespace-normal">{errorNotice}</span>
             </div>
-            <button
-              onClick={() => setErrorNotice(null)}
-              className="p-1 text-slate-500 hover:text-white cursor-pointer"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                onClick={() => {
+                  setErrorNotice(null);
+                  if (currentFundCode) {
+                    loadFundAnalysis(currentFundCode, currentPeriod);
+                  }
+                }}
+                className="px-2.5 py-1 rounded bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 font-medium text-[11px] transition-colors cursor-pointer"
+              >
+                Tekrar Dene
+              </button>
+              <button
+                onClick={() => setErrorNotice(null)}
+                className="p-1 text-slate-500 hover:text-white cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
           </div>
         )}
 

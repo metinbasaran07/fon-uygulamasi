@@ -53,18 +53,19 @@ export const TransactionHistoryModal: React.FC<TransactionHistoryModalProps> = (
 
         if (res.ok) {
           const data = await res.json();
-          if (data?.success && data.price) {
-            setFiyat(data.price.toString());
+          const pNum = Number(data?.price);
+          if (data?.success && !isNaN(pNum) && pNum > 0) {
+            setFiyat(pNum.toString());
             if (data.latestPrice) {
-              setLatestLivePrice(data.latestPrice);
+              setLatestLivePrice(Number(data.latestPrice));
             }
             if (data.isLatest) {
-              setPriceLookupNotice(`Güncel TEFAS Fiyatı: ₺${data.price.toFixed(4)} (Otomatik)`);
+              setPriceLookupNotice(`Güncel TEFAS Fiyatı: ₺${pNum.toFixed(4)} (Otomatik)`);
             } else if (data.isExactMatch) {
-              setPriceLookupNotice(`${data.resolvedDate} TEFAS Fiyatı: ₺${data.price.toFixed(4)} (Otomatik)`);
+              setPriceLookupNotice(`${data.resolvedDate} TEFAS Fiyatı: ₺${pNum.toFixed(4)} (Otomatik)`);
             } else {
               setPriceLookupNotice(
-                `${data.requestedDate} (İşlemsiz gün) ➔ ${data.resolvedDate} Fiyatı: ₺${data.price.toFixed(4)} (Otomatik)`
+                `${data.requestedDate} (İşlemsiz gün) ➔ ${data.resolvedDate} Fiyatı: ₺${pNum.toFixed(4)} (Otomatik)`
               );
             }
           }
@@ -103,7 +104,9 @@ export const TransactionHistoryModal: React.FC<TransactionHistoryModalProps> = (
 
   const handleDateChange = (newDate: string) => {
     setTarih(newDate);
-    fetchPriceForDate(holding.fonKodu, newDate);
+    if (holding?.fonKodu && newDate && newDate.length === 10) {
+      fetchPriceForDate(holding.fonKodu, newDate);
+    }
   };
 
   const handleDatePreset = (daysAgo: number) => {

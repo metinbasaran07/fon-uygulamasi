@@ -72,11 +72,17 @@ function getTefasCookies(forceRefresh = false): Promise<string> {
   });
 }
 
+// In-memory cache for TEFAS fund history
+const historyCache = new Map<string, { timestamp: number; data: any }>();
+const HISTORY_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
 function callTefasApi(endpoint: string, payload: any, retry = true): Promise<any> {
   return getTefasCookies().then((cookies) => {
     const postData = JSON.stringify(payload);
 
     return new Promise((resolve, reject) => {
+      let isSettled = false;
+
       const req = https.request(
         {
           hostname: 'www.tefas.gov.tr',
@@ -98,16 +104,21 @@ function callTefasApi(endpoint: string, payload: any, retry = true): Promise<any
           let body = '';
           res.on('data', (chunk) => (body += chunk));
           res.on('end', async () => {
+            if (isSettled) return;
             if (res.statusCode === 200) {
               try {
                 const parsed = JSON.parse(body);
+                isSettled = true;
                 return resolve(parsed);
               } catch (e) {
+                isSettled = true;
                 return reject(new Error('TEFAS verisi ayrıştırılamadı.'));
               }
             }
 
             if (retry) {
+              isSettled = true;
+              await new Promise((r) => setTimeout(r, 600)); // exponential backoff
               await getTefasCookies(true);
               try {
                 const retryRes = await callTefasApi(endpoint, payload, false);
@@ -117,13 +128,17 @@ function callTefasApi(endpoint: string, payload: any, retry = true): Promise<any
               }
             }
 
+            isSettled = true;
             reject(new Error(`TEFAS API hatası (${res.statusCode})`));
           });
         }
       );
 
       req.on('error', async (err) => {
+        if (isSettled) return;
         if (retry) {
+          isSettled = true;
+          await new Promise((r) => setTimeout(r, 600));
           await getTefasCookies(true);
           try {
             const retryRes = await callTefasApi(endpoint, payload, false);
@@ -132,11 +147,15 @@ function callTefasApi(endpoint: string, payload: any, retry = true): Promise<any
             return reject(retryErr);
           }
         }
+        isSettled = true;
         reject(err);
       });
 
-      req.setTimeout(8000, () => {
-        req.destroy(new Error('TEFAS sunucu yanıt vermedi (Zaman aşımı)'));
+      // Increased timeout to 15s to handle TEFAS peak-hour latency gracefully
+      req.setTimeout(15000, () => {
+        if (!isSettled) {
+          req.destroy(new Error('TEFAS sunucu yanıt vermedi (Zaman aşımı)'));
+        }
       });
 
       req.write(postData);
@@ -172,6 +191,18 @@ app.post('/api/tefas/history', async (req, res) => {
     const periodNum = Number(periyod);
     let chosenPeriod = validPeriods.includes(periodNum) ? periodNum : 12;
 
+    const cacheKey = `${cleanCode}_${chosenPeriod}`;
+    const cached = historyCache.get(cacheKey);
+    const now = Date.now();
+    if (cached && now - cached.timestamp < HISTORY_CACHE_TTL && cached.data.length > 0) {
+      return res.json({
+        success: true,
+        fonKodu: cleanCode,
+        periyod: chosenPeriod,
+        resultList: cached.data,
+      });
+    }
+
     const fetchHistory = async (p: number) => {
       try {
         const data = await callTefasApi('fonFiyatBilgiGetir', {
@@ -200,6 +231,10 @@ app.post('/api/tefas/history', async (req, res) => {
       }
     }
 
+    if (resultList.length > 0) {
+      historyCache.set(cacheKey, { timestamp: Date.now(), data: resultList });
+    }
+
     return res.json({
       success: true,
       fonKodu: cleanCode,
@@ -208,8 +243,18 @@ app.post('/api/tefas/history', async (req, res) => {
     });
   } catch (error: any) {
     console.warn('TEFAS History fetch error:', error.message);
+    const rawMsg = error.message || '';
+    let friendlyMsg = rawMsg;
+    if (
+      rawMsg.includes('fetch failed') ||
+      rawMsg.includes('Zaman aşımı') ||
+      rawMsg.includes('ETIMEDOUT') ||
+      rawMsg.includes('ECONNRESET')
+    ) {
+      friendlyMsg = 'Takasbank TEFAS sunucuları anlık yoğunluk yaşıyor. Lütfen birazdan tekrar deneyiniz.';
+    }
     return res.status(500).json({
-      error: 'TEFAS verisi alınamadı: ' + (error.message || 'Bilinmeyen hata'),
+      error: 'TEFAS verisi alınamadı: ' + friendlyMsg,
     });
   }
 });
@@ -224,14 +269,12 @@ app.post('/api/tefas/price-on-date', async (req, res) => {
 
     const cleanCode = String(fonKodu).toUpperCase().trim();
     const todayYMD = new Date().toISOString().split('T')[0];
-    const targetDateStr = tarih ? String(tarih).trim() : todayYMD;
-    const targetDateObj = new Date(targetDateStr);
-    const targetTime = isNaN(targetDateObj.getTime()) ? Date.now() : targetDateObj.getTime();
-    const targetYMD = isNaN(targetDateObj.getTime()) ? todayYMD : targetDateObj.toISOString().split('T')[0];
+    const targetYMD = tarih && String(tarih).trim().length === 10 ? String(tarih).trim() : todayYMD;
 
-    // Determine how many days in the past the target date is
-    const now = Date.now();
-    const diffDays = Math.max(1, Math.ceil((now - targetTime) / (1000 * 3600 * 24)));
+    // Calculate approximate days difference
+    const nowMs = Date.now();
+    const targetMs = new Date(targetYMD).getTime();
+    const diffDays = Math.max(1, Math.ceil((nowMs - targetMs) / (1000 * 3600 * 24)));
 
     let period = 1;
     if (diffDays > 25) period = 3;
@@ -240,26 +283,49 @@ app.post('/api/tefas/price-on-date', async (req, res) => {
     if (diffDays > 360) period = 36;
     if (diffDays > 1050) period = 60;
 
-    const data = await callTefasApi('fonFiyatBilgiGetir', {
+    let data = await callTefasApi('fonFiyatBilgiGetir', {
       fonKodu: cleanCode,
       dil: 'TR',
       periyod: period,
     });
 
-    const list: any[] = data?.resultList || [];
+    let list: any[] = data?.resultList || [];
 
-    if (list.length === 0) {
-      return res.json({ success: false, message: 'Bu fon için geçmiş fiyat verisi bulunamadı.' });
+    // Filter out 0 price artifacts from TEFAS
+    let validList = list.filter((item) => Number(item.fiyat) > 0);
+
+    // If target date is older than the earliest date in list and period < 60, retry with full period
+    if (validList.length > 0) {
+      validList.sort((a, b) => parseTefasDate(a.tarih).getTime() - parseTefasDate(b.tarih).getTime());
+      const earliestDateYMD = parseTefasDate(validList[0].tarih).toISOString().split('T')[0];
+      if (targetYMD < earliestDateYMD && period < 60) {
+        data = await callTefasApi('fonFiyatBilgiGetir', {
+          fonKodu: cleanCode,
+          dil: 'TR',
+          periyod: 60,
+        });
+        list = data?.resultList || [];
+        validList = list.filter((item) => Number(item.fiyat) > 0);
+        validList.sort((a, b) => parseTefasDate(a.tarih).getTime() - parseTefasDate(b.tarih).getTime());
+      }
     }
 
-    // Sort ascending by date
-    list.sort((a, b) => parseTefasDate(a.tarih).getTime() - parseTefasDate(b.tarih).getTime());
+    if (validList.length === 0) {
+      // If no history found, check daily batch / single item
+      if (list.length > 0) {
+        validList = list;
+      } else {
+        return res.json({ success: false, message: 'Bu fon için fiyat verisi bulunamadı.' });
+      }
+    }
 
-    const latestItem = list[list.length - 1];
+    validList.sort((a, b) => parseTefasDate(a.tarih).getTime() - parseTefasDate(b.tarih).getTime());
+
+    const latestItem = validList[validList.length - 1];
     const latestPrice = Number(latestItem.fiyat);
     const latestDateYMD = parseTefasDate(latestItem.tarih).toISOString().split('T')[0];
 
-    // If requested date is today or in the future, return latest price
+    // If requested date is today or after latest available date, return latest price
     if (targetYMD >= latestDateYMD) {
       return res.json({
         success: true,
@@ -268,14 +334,14 @@ app.post('/api/tefas/price-on-date', async (req, res) => {
         resolvedDate: latestDateYMD,
         price: latestPrice,
         latestPrice,
-        isExactMatch: true,
+        isExactMatch: targetYMD === latestDateYMD,
         isLatest: true,
         fonUnvan: latestItem.fonUnvan || undefined,
       });
     }
 
-    // Find exact date match
-    let matchedItem = list.find((item) => {
+    // Find exact date match in valid price series
+    let matchedItem = validList.find((item) => {
       const d = parseTefasDate(item.tarih).toISOString().split('T')[0];
       return d === targetYMD;
     });
@@ -284,14 +350,14 @@ app.post('/api/tefas/price-on-date', async (req, res) => {
 
     // If no exact match (e.g., weekend or official holiday), find the latest date on or before targetYMD
     if (!matchedItem) {
-      const eligible = list.filter((item) => {
+      const onOrBefore = validList.filter((item) => {
         const d = parseTefasDate(item.tarih).toISOString().split('T')[0];
         return d <= targetYMD;
       });
-      if (eligible.length > 0) {
-        matchedItem = eligible[eligible.length - 1];
+      if (onOrBefore.length > 0) {
+        matchedItem = onOrBefore[onOrBefore.length - 1];
       } else {
-        matchedItem = list[0];
+        matchedItem = validList[0];
       }
     }
 

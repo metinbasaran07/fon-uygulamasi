@@ -210,8 +210,12 @@ export default async function handler(req, res) {
       list: listData.resultList || [],
     });
   } catch (err) {
+    let msg = err?.message || 'Bilinmeyen hata';
+    if (msg.includes('fetch failed')) {
+      msg = 'Takasbank TEFAS sunucuları anlık yoğunluk yaşıyor. Lütfen birazdan tekrar deneyiniz.';
+    }
     return res.status(500).json({
-      error: 'TEFAS verisi çekilemedi: ' + (err.message || 'Bilinmeyen hata'),
+      error: 'TEFAS verisi çekilemedi: ' + msg,
     });
   }
 }

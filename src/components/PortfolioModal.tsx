@@ -39,6 +39,7 @@ export const PortfolioModal: React.FC<PortfolioModalProps> = ({
   const [isFetchingPrice, setIsFetchingPrice] = useState(false);
   const [priceLookupNotice, setPriceLookupNotice] = useState<string | null>(null);
   const [latestLivePrice, setLatestLivePrice] = useState<number | null>(null);
+  const [showSuggestions, setShowSuggestions] = useState(false);
 
   // References to keep callbacks stable and prevent unwanted form resets
   const adetRef = useRef(adet);
@@ -63,7 +64,7 @@ export const PortfolioModal: React.FC<PortfolioModalProps> = ({
   const fetchPriceForDate = useCallback(
     async (code: string, dateStr: string) => {
       const clean = code.toUpperCase().trim();
-      if (clean.length < 3 || !dateStr) return;
+      if (clean.length < 2 || !dateStr || dateStr.length !== 10) return;
 
       setIsFetchingPrice(true);
       setPriceLookupNotice(null);
@@ -77,8 +78,8 @@ export const PortfolioModal: React.FC<PortfolioModalProps> = ({
 
         if (res.ok) {
           const data = await res.json();
-          if (data?.success && data.price) {
-            const pNum = Number(data.price);
+          const pNum = Number(data?.price);
+          if (data?.success && !isNaN(pNum) && pNum > 0) {
             setAlisFiyati(pNum.toString());
             updateTutarOrAdet(pNum);
 
@@ -95,7 +96,7 @@ export const PortfolioModal: React.FC<PortfolioModalProps> = ({
               setPriceLookupNotice(`${data.resolvedDate} TEFAS Fiyatı: ₺${pNum.toFixed(4)} (Otomatik)`);
             } else {
               setPriceLookupNotice(
-                `${data.requestedDate} (Tatil/Hafta sonu) ➔ ${data.resolvedDate} Fiyatı: ₺${pNum.toFixed(4)} (Otomatik)`
+                `${data.requestedDate} (İşlemsiz gün) ➔ ${data.resolvedDate} Fiyatı: ₺${pNum.toFixed(4)} (Otomatik)`
               );
             }
           }
@@ -121,9 +122,10 @@ export const PortfolioModal: React.FC<PortfolioModalProps> = ({
       setTransactionDate(todayStr);
 
       const price = initialFund.guncelFiyat || latestPricesMap[initialFund.fonKodu];
-      if (price) {
+      if (price && price > 0) {
         setAlisFiyati(price.toString());
         setLatestLivePrice(price);
+        updateTutarOrAdet(price);
         setPriceLookupNotice(`Güncel TEFAS Fiyatı: ₺${price.toFixed(4)} (Otomatik)`);
       } else {
         fetchPriceForDate(initialFund.fonKodu, todayStr);
@@ -139,17 +141,45 @@ export const PortfolioModal: React.FC<PortfolioModalProps> = ({
       setPriceLookupNotice(null);
       setTransactionDate(new Date().toISOString().split('T')[0]);
     }
+    setShowSuggestions(false);
     setTransactionType('BUY');
     // Only re-run when isOpen or initialFund identity changes
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, initialFund]);
 
-  if (!isOpen) return null;
+  // Suggestions for autocomplete
+  const suggestions = React.useMemo(() => {
+    const q = fonKodu.toUpperCase().trim();
+    if (!q || !showSuggestions) return [];
+    return fundsList
+      .filter((f) => f.fonKodu.includes(q) || (f.fonUnvan && f.fonUnvan.toUpperCase().includes(q)))
+      .slice(0, 6);
+  }, [fonKodu, fundsList, showSuggestions]);
+
+  const applyFundSelection = (selectedFund: TefasListRaw) => {
+    const clean = selectedFund.fonKodu.toUpperCase().trim();
+    setFonKodu(clean);
+    setFonUnvan(selectedFund.fonUnvan);
+    setKategori(selectedFund.fonTurAciklama || 'Yatırım Fonu');
+    setShowSuggestions(false);
+
+    const todayStr = new Date().toISOString().split('T')[0];
+    const livePrice = latestPricesMap[clean];
+    if (livePrice && livePrice > 0 && transactionDate === todayStr) {
+      setAlisFiyati(livePrice.toString());
+      setLatestLivePrice(livePrice);
+      updateTutarOrAdet(livePrice);
+      setPriceLookupNotice(`Güncel TEFAS Fiyatı: ₺${livePrice.toFixed(4)} (Otomatik)`);
+    }
+
+    fetchPriceForDate(clean, transactionDate);
+  };
 
   // Auto-fill price when fund code changes
   const handleFundCodeChange = (code: string) => {
     const clean = code.toUpperCase().trim();
     setFonKodu(clean);
+    setShowSuggestions(true);
 
     const found = fundsList.find((f) => f.fonKodu === clean);
     if (found) {
@@ -157,15 +187,25 @@ export const PortfolioModal: React.FC<PortfolioModalProps> = ({
       setKategori(found.fonTurAciklama || 'Yatırım Fonu');
     }
 
-    if (clean.length >= 3) {
+    const todayStr = new Date().toISOString().split('T')[0];
+    const livePrice = latestPricesMap[clean];
+    if (livePrice && livePrice > 0 && transactionDate === todayStr) {
+      setAlisFiyati(livePrice.toString());
+      setLatestLivePrice(livePrice);
+      updateTutarOrAdet(livePrice);
+      setPriceLookupNotice(`Güncel TEFAS Fiyatı: ₺${livePrice.toFixed(4)} (Otomatik)`);
+    }
+
+    if (clean.length >= 2) {
       fetchPriceForDate(clean, transactionDate);
     }
   };
 
   const handleDateChange = (newDate: string) => {
     setTransactionDate(newDate);
-    if (fonKodu.trim().length >= 3) {
-      fetchPriceForDate(fonKodu.trim(), newDate);
+    const clean = fonKodu.toUpperCase().trim();
+    if (clean.length >= 2 && newDate && newDate.length === 10) {
+      fetchPriceForDate(clean, newDate);
     }
   };
 
@@ -272,9 +312,29 @@ export const PortfolioModal: React.FC<PortfolioModalProps> = ({
     onClose();
   };
 
+  // Close modal on Escape key press
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
+
+  if (!isOpen) return null;
+
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4">
-      <div className="relative w-full max-w-md bg-slate-950 border border-slate-800 rounded-2xl p-4 sm:p-6 shadow-2xl animate-in fade-in zoom-in-95 duration-150">
+    <div
+      className="fixed inset-0 z-50 overflow-y-auto bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 animate-in fade-in duration-150"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div
+        className="relative w-full max-w-md bg-slate-950 border border-slate-800 rounded-2xl p-4 sm:p-6 shadow-2xl animate-in fade-in zoom-in-95 duration-150"
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Header */}
         <div className="flex items-center justify-between pb-3 border-b border-slate-800">
           <div>
@@ -287,8 +347,11 @@ export const PortfolioModal: React.FC<PortfolioModalProps> = ({
             </p>
           </div>
           <button
+            type="button"
             onClick={onClose}
             className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-900 transition-colors cursor-pointer"
+            aria-label="Kapat"
+            title="Kapat"
           >
             <X className="w-4 h-4" />
           </button>
@@ -324,20 +387,50 @@ export const PortfolioModal: React.FC<PortfolioModalProps> = ({
             </button>
           </div>
 
-          {/* Fund Code Input */}
-          <div>
+          {/* Fund Code Input with Autocomplete */}
+          <div className="relative">
             <label className="block text-[11px] font-mono uppercase text-slate-400 mb-1">
-              Fon Kodu
+              Fon Kodu veya Fon Adı
             </label>
             <input
               type="text"
               value={fonKodu}
               onChange={(e) => handleFundCodeChange(e.target.value)}
-              placeholder="Örn: TI2, MAC, IIH, PK1..."
-              maxLength={6}
+              onFocus={() => setShowSuggestions(true)}
+              placeholder="Örn: TI2, MAC, AFA, KZL, IIH..."
+              maxLength={12}
               className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-white font-mono text-sm uppercase focus:outline-none focus:border-emerald-500"
               required
+              autoComplete="off"
             />
+
+            {/* Suggestions dropdown */}
+            {showSuggestions && suggestions.length > 0 && (
+              <div className="absolute z-30 left-0 right-0 mt-1 max-h-48 overflow-y-auto bg-slate-900 border border-slate-700 rounded-xl shadow-2xl divide-y divide-slate-800/80">
+                {suggestions.map((f) => (
+                  <button
+                    key={f.fonKodu}
+                    type="button"
+                    onClick={() => applyFundSelection(f)}
+                    className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-slate-800 cursor-pointer transition-colors"
+                  >
+                    <FundCompanyLogo fonKodu={f.fonKodu} fonUnvan={f.fonUnvan} size="sm" />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-bold text-white font-mono text-xs">{f.fonKodu}</span>
+                        {latestPricesMap[f.fonKodu] && (
+                          <span className="text-[10px] text-emerald-400 font-mono">
+                            ₺{latestPricesMap[f.fonKodu].toFixed(4)}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[10px] text-slate-400 truncate">{f.fonUnvan}</p>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+
             {fonUnvan && (
               <div className="flex items-center gap-2 mt-1.5 p-1.5 bg-slate-900/60 rounded-lg border border-slate-800/80">
                 <FundCompanyLogo fonKodu={fonKodu} fonUnvan={fonUnvan} size="sm" />
@@ -346,21 +439,30 @@ export const PortfolioModal: React.FC<PortfolioModalProps> = ({
             )}
           </div>
 
-          {/* Transaction Date (Clean Standard Date Input - Presets Removed as requested) */}
+          {/* Transaction Date (Auto-fetches selected date's unit price) */}
           <div>
             <div className="flex items-center justify-between mb-1">
               <label className="text-[11px] font-mono uppercase text-slate-400 flex items-center gap-1">
                 <Calendar className="w-3 h-3 text-emerald-400" />
                 İşlem Tarihi
               </label>
-              <span className="text-[10px] text-slate-500 font-mono">
-                {transactionDate}
-              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  const todayStr = new Date().toISOString().split('T')[0];
+                  handleDateChange(todayStr);
+                }}
+                className="text-[10px] text-emerald-400 hover:text-emerald-300 font-mono cursor-pointer"
+                title="Bugünün tarihine getir"
+              >
+                Bugün
+              </button>
             </div>
 
             <input
               type="date"
               value={transactionDate}
+              max={new Date().toISOString().split('T')[0]}
               onChange={(e) => handleDateChange(e.target.value)}
               className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-white font-mono text-xs focus:outline-none focus:border-emerald-500 cursor-pointer"
               required
