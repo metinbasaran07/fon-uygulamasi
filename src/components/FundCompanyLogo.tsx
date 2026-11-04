@@ -76,8 +76,6 @@ export const COMPANY_DOMAIN_MAP: Record<string, string> = {
   'FİBA PORTFÖY': 'fibabanka.com.tr',
   'HSBC': 'hsbc.com.tr',
   'HSBC PORTFÖY': 'hsbc.com.tr',
-  'ATLAS': 'atlasportfoy.com.tr',
-  'ATLAS PORTFÖY': 'atlasportfoy.com.tr',
   'EMAA BLUE': 'emaablue.com',
   'EMAA BLUE PORTFÖY': 'emaablue.com',
   'NUROL': 'nurolbank.com.tr',
@@ -250,6 +248,12 @@ const COMPANY_BADGE_STYLES: Record<string, { gradient: string; border: string; t
   'SPARTA': {
     gradient: 'from-stone-600 via-zinc-700 to-stone-900',
     border: 'border-zinc-400/50',
+    text: 'text-white',
+  },
+  // Atlas Portföy: Karakteristik Atlas Laciverti / Gece Mavisi
+  'ATLAS': {
+    gradient: 'from-blue-700 via-indigo-900 to-slate-950',
+    border: 'border-blue-400/50',
     text: 'text-white',
   },
   // İncir Portföy: Koyu Bordo / Mürdüm
