@@ -36,6 +36,7 @@ export interface TechnicalIndicators {
   previousPrice: number;
   dailyChangePercent: number;
   periodChangePercent: number;
+  priceDate?: string; // Latest TEFAS closing date e.g. "2026-11-05"
   rsi14: number | null;
   rsiCondition: 'AŞIRI ALIM (ŞİŞKİN)' | 'DENGELİ / NÖTR' | 'AŞIRI SATIM (DİP FIRSATI)';
   rsiTone: 'emerald' | 'amber' | 'rose' | 'cyan';
@@ -65,6 +66,7 @@ export interface FundScoreBreakdown {
 export interface FundAnalysisResult {
   fonKodu: string;
   fonUnvan: string;
+  priceDate?: string; // Latest TEFAS closing date e.g. "2026-11-05"
   kategori?: string;
   kategoriDerece?: number;
   kategoriFonSay?: number;

@@ -23,7 +23,7 @@ import { analyzeFundData } from './utils/quantEngine';
 import { AlertCircle, RefreshCw, X } from 'lucide-react';
 import { AppTab } from './components/Header';
 
-const STORAGE_KEY = 'fontables_user_portfolio_holdings_v3';
+const STORAGE_KEY = 'fontables_user_portfolio_holdings_v4';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<AppTab>('analysis');
@@ -36,60 +36,30 @@ export default function App() {
   const [dailyChangesMap, setDailyChangesMap] = useState<
     Record<
       string,
-      { currentPrice: number; prevPrice: number; dailyChangeTL: number; dailyChangePercent: number }
+      {
+        currentPrice: number;
+        prevPrice: number;
+        dailyChangeTL: number;
+        dailyChangePercent: number;
+        priceDate?: string;
+      }
     >
   >({});
   const [isLoadingFund, setIsLoadingFund] = useState<boolean>(true);
   const [errorNotice, setErrorNotice] = useState<string | null>(null);
 
-  // Portfolio State with initial transactions
+  // Portfolio State (Kullanıcı fon ekleyene kadar boştur; eklenenler localStorage'da saklanır)
   const [holdings, setHoldings] = useState<PortfolioHolding[]>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
     } catch (e) {
       console.warn('Could not parse portfolio storage:', e);
     }
-    return [
-      {
-        id: 'TI2',
-        fonKodu: 'TI2',
-        fonUnvan: 'İŞ PORTFÖY HİSSE SENEDİ (TL) FONU (HİSSE SENEDİ YOĞUN FON)',
-        kategori: 'Hisse Senedi Şemsiye Fonu',
-        adet: 15000,
-        alisFiyati: 0.1042,
-        tarih: '2026-06-15',
-        islemler: [
-          {
-            id: 'tx-1',
-            type: 'BUY',
-            tarih: '2026-06-15',
-            adet: 15000,
-            fiyat: 0.1042,
-            toplamTutar: 1563,
-          },
-        ],
-      },
-      {
-        id: 'IIH',
-        fonKodu: 'IIH',
-        fonUnvan: 'İSTANBUL PORTFÖY ÜÇÜNCÜ DEĞİŞKEN FON',
-        kategori: 'Değişken Şemsiye Fonu',
-        adet: 2500,
-        alisFiyati: 1.84,
-        tarih: '2026-05-10',
-        islemler: [
-          {
-            id: 'tx-2',
-            type: 'BUY',
-            tarih: '2026-05-10',
-            adet: 2500,
-            fiyat: 1.84,
-            toplamTutar: 4600,
-          },
-        ],
-      },
-    ];
+    return [];
   });
 
   const [isAllFundsDrawerOpen, setIsAllFundsDrawerOpen] = useState<boolean>(false);
@@ -434,7 +404,7 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#080c14] text-slate-100 flex flex-col font-sans selection:bg-emerald-500/30 selection:text-emerald-300">
+    <div className="min-h-screen min-h-[100dvh] bg-[#080c14] text-slate-100 flex flex-col font-sans selection:bg-emerald-500/30 selection:text-emerald-300">
       {/* Fontables Header */}
       <Header
         activeTab={activeTab}
@@ -443,7 +413,7 @@ export default function App() {
       />
 
       {/* Main Workspace (Mobile-Optimized Padding with bottom clearance for mobile nav) */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 py-3 sm:py-5 pb-20 md:pb-6 space-y-3 sm:space-y-4">
+      <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 py-3 sm:py-5 pb-24 sm:pb-28 md:pb-6 space-y-3 sm:space-y-4">
         {/* Subtle, Non-blocking Error Notice */}
         {errorNotice && (
           <div className="p-2.5 sm:p-3 rounded-xl bg-slate-900 border border-slate-800 text-slate-300 flex items-center justify-between text-xs animate-in fade-in duration-150 gap-3">

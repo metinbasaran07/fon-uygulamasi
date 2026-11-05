@@ -422,11 +422,15 @@ export function analyzeFundData(
   else if (sharpeRatio >= 0) sharpeClass = 'DÜŞÜK';
   else sharpeClass = 'NEGATİF';
 
+  const lastItem = sorted[lastIdx];
+  const priceDate = lastItem?.tarih;
+
   const indicators: TechnicalIndicators = {
     currentPrice: Math.round(currentPrice * 1000000) / 1000000,
     previousPrice: Math.round(previousPrice * 1000000) / 1000000,
     dailyChangePercent: Math.round(dailyChangePercent * 100) / 100,
     periodChangePercent: Math.round(periodChangePercent * 100) / 100,
+    priceDate,
     rsi14: currentRsi,
     rsiCondition,
     rsiTone,
@@ -453,11 +457,10 @@ export function analyzeFundData(
     maxDrawdown,
   });
 
-  const lastItem = sorted[lastIdx];
-
   return {
     fonKodu: lastItem.fonKodu,
     fonUnvan: fundMeta?.fonUnvan || lastItem.fonUnvan || `${lastItem.fonKodu} Fonu`,
+    priceDate,
     kategori: fundMeta?.fonTurAciklama || 'Yatırım Fonu',
     kategoriDerece: lastItem.kategoriDerece,
     kategoriFonSay: lastItem.kategoriFonSay,

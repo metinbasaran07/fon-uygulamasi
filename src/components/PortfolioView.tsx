@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   PortfolioHolding,
   PortfolioHoldingCalculated,
@@ -17,10 +17,13 @@ import {
   BarChart2,
   Filter,
   Percent,
+  Loader2,
+  CheckCircle2,
 } from 'lucide-react';
 import { TransactionHistoryModal } from './TransactionHistoryModal';
 import { getFundStopajInfo } from '../utils/taxEngine';
 import { FundCompanyLogo } from './FundCompanyLogo';
+import { formatPriceDate } from '../utils/dateFormatter';
 
 interface PortfolioViewProps {
   holdings: PortfolioHolding[];
@@ -31,7 +34,13 @@ interface PortfolioViewProps {
   latestPricesMap: Record<string, number>;
   dailyChangesMap?: Record<
     string,
-    { currentPrice: number; prevPrice: number; dailyChangeTL: number; dailyChangePercent: number }
+    {
+      currentPrice: number;
+      prevPrice: number;
+      dailyChangeTL: number;
+      dailyChangePercent: number;
+      priceDate?: string;
+    }
   >;
   onAddTransaction: (holdingId: string, tx: PortfolioTransaction, latestPrice?: number) => void;
   onDeleteTransaction: (holdingId: string, txId: string) => void;
@@ -60,6 +69,89 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({
     d.setMonth(d.getMonth() - 1);
     return d.toISOString().split('T')[0];
   });
+
+  // Calculate target historical date (YYYY-MM-DD)
+  const targetHistoricalDate = useMemo(() => {
+    if (valuationDate === 'today') return null;
+    const now = new Date();
+    if (valuationDate === '1w') {
+      const d = new Date(now.getTime() - 7 * 24 * 3600 * 1000);
+      return d.toISOString().split('T')[0];
+    }
+    if (valuationDate === '1m') {
+      const d = new Date(now);
+      d.setMonth(d.getMonth() - 1);
+      return d.toISOString().split('T')[0];
+    }
+    if (valuationDate === '3m') {
+      const d = new Date(now);
+      d.setMonth(d.getMonth() - 3);
+      return d.toISOString().split('T')[0];
+    }
+    if (valuationDate === '1y') {
+      const d = new Date(now);
+      d.setFullYear(d.getFullYear() - 1);
+      return d.toISOString().split('T')[0];
+    }
+    if (valuationDate === 'ytd') {
+      return `${now.getFullYear()}-01-02`;
+    }
+    if (valuationDate === 'custom') {
+      return customDate || `${now.getFullYear()}-01-02`;
+    }
+    return null;
+  }, [valuationDate, customDate]);
+
+  // State to store real TEFAS closing prices for the chosen historical date
+  const [historicalPricesMap, setHistoricalPricesMap] = useState<
+    Record<string, { price: number; resolvedDate: string; isExactMatch: boolean; latestPrice: number }>
+  >({});
+  const [isLoadingHistorical, setIsLoadingHistorical] = useState(false);
+  const [historicalError, setHistoricalError] = useState<string | null>(null);
+
+  // Fetch 100% authentic TEFAS historical prices whenever historical date changes
+  useEffect(() => {
+    if (!targetHistoricalDate || holdings.length === 0) {
+      setHistoricalPricesMap({});
+      setIsLoadingHistorical(false);
+      setHistoricalError(null);
+      return;
+    }
+
+    let isMounted = true;
+    setIsLoadingHistorical(true);
+    setHistoricalError(null);
+
+    const codes = Array.from(new Set(holdings.map((h) => h.fonKodu)));
+
+    fetch('/api/tefas/batch-price-on-date', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ codes, tarih: targetHistoricalDate }),
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        if (!isMounted) return;
+        if (data?.success && data?.results) {
+          setHistoricalPricesMap(data.results);
+        } else {
+          setHistoricalError('TEFAS geçmiş fiyat verisi alınamadı.');
+        }
+      })
+      .catch((err) => {
+        if (!isMounted) return;
+        setHistoricalError('Takasbank TEFAS sunucusuna bağlanılamadı.');
+      })
+      .finally(() => {
+        if (isMounted) {
+          setIsLoadingHistorical(false);
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [targetHistoricalDate, holdings]);
 
   // Calculate live values
   const { calculatedHoldings, summary, categoryAllocation, historicalMetrics } = useMemo(() => {
@@ -112,6 +204,21 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({
         kategori: h.kategori || meta?.fonTurAciklama || 'Yatırım Fonu',
         gunlukDegisimTL: fundDailyTL,
         gunlukDegisimYuzde: fundDailyPct,
+        priceDate: dailyInfo?.priceDate,
+        // Real TEFAS historical closing price & return for this fund
+        historicalPrice:
+          historicalPricesMap[h.fonKodu] && typeof historicalPricesMap[h.fonKodu].price === 'number'
+            ? historicalPricesMap[h.fonKodu].price
+            : undefined,
+        historicalResolvedDate: historicalPricesMap[h.fonKodu]?.resolvedDate,
+        historicalDiffTL:
+          historicalPricesMap[h.fonKodu] && typeof historicalPricesMap[h.fonKodu].price === 'number'
+            ? deg - h.adet * historicalPricesMap[h.fonKodu].price
+            : undefined,
+        historicalDiffPct:
+          historicalPricesMap[h.fonKodu] && typeof historicalPricesMap[h.fonKodu].price === 'number' && historicalPricesMap[h.fonKodu].price > 0
+            ? ((livePrice - historicalPricesMap[h.fonKodu].price) / historicalPricesMap[h.fonKodu].price) * 100
+            : undefined,
       };
     });
 
@@ -149,67 +256,37 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({
       }))
       .sort((a, b) => b.val - a.val);
 
-    // Calculate historical return estimate based on TEFAS return rates
-    let pastValuationMultiplier = 1;
+    // Calculate 100% Real TEFAS historical portfolio valuation (Zero estimation, zero hardcoded multipliers)
     let periodLabel = 'Bugün';
+    if (valuationDate === '1w') periodLabel = '1 Hafta Önce';
+    else if (valuationDate === '1m') periodLabel = '1 Ay Önce';
+    else if (valuationDate === '3m') periodLabel = '3 Ay Önce';
+    else if (valuationDate === '1y') periodLabel = '1 Yıl Önce';
+    else if (valuationDate === 'ytd') periodLabel = 'Yılbaşı (YTD)';
+    else if (valuationDate === 'custom') periodLabel = customDate;
 
-    if (valuationDate === '1w') {
-      periodLabel = '1 Hafta';
-      pastValuationMultiplier = 0.99; // approx week return adjustment
-    } else if (valuationDate === '1m') {
-      periodLabel = '1 Ay';
-      let weightedReturn = 0;
+    let realPastVal = 0;
+    const resolvedDatesSet = new Set<string>();
+
+    if (valuationDate === 'today') {
+      realPastVal = toplamDeger;
+    } else {
       list.forEach((it) => {
-        const meta = fundsList.find((f) => f.fonKodu === it.fonKodu);
-        const r1a = meta?.getiri1a ?? 2.5;
-        weightedReturn += (Number(r1a) * it.portfoyOrani) / 100;
+        const histData = historicalPricesMap[it.fonKodu];
+        const pastPrice =
+          histData && typeof histData.price === 'number' && histData.price > 0
+            ? histData.price
+            : it.guncelFiyat; // fallback while loading
+        if (histData?.resolvedDate) {
+          resolvedDatesSet.add(histData.resolvedDate);
+        }
+        realPastVal += it.adet * pastPrice;
       });
-      pastValuationMultiplier = 1 / (1 + weightedReturn / 100);
-    } else if (valuationDate === '3m') {
-      periodLabel = '3 Ay';
-      let weightedReturn = 0;
-      list.forEach((it) => {
-        const meta = fundsList.find((f) => f.fonKodu === it.fonKodu);
-        const r3a = meta?.getiri3a ?? 8;
-        weightedReturn += (Number(r3a) * it.portfoyOrani) / 100;
-      });
-      pastValuationMultiplier = 1 / (1 + weightedReturn / 100);
-    } else if (valuationDate === '1y') {
-      periodLabel = '1 Yıl';
-      let weightedReturn = 0;
-      list.forEach((it) => {
-        const meta = fundsList.find((f) => f.fonKodu === it.fonKodu);
-        const r1y = meta?.getiri1y ?? 38;
-        weightedReturn += (Number(r1y) * it.portfoyOrani) / 100;
-      });
-      pastValuationMultiplier = 1 / (1 + weightedReturn / 100);
-    } else if (valuationDate === 'ytd') {
-      periodLabel = 'Yılbaşı (YTD)';
-      let weightedReturn = 0;
-      list.forEach((it) => {
-        const meta = fundsList.find((f) => f.fonKodu === it.fonKodu);
-        const ryb = meta?.getiriyb ?? 15;
-        weightedReturn += (Number(ryb) * it.portfoyOrani) / 100;
-      });
-      pastValuationMultiplier = 1 / (1 + weightedReturn / 100);
-    } else if (valuationDate === 'custom') {
-      periodLabel = customDate;
-      const past = new Date(customDate);
-      const now = new Date();
-      const months = Math.max(0.5, (now.getTime() - past.getTime()) / (1000 * 3600 * 24 * 30));
-      let weightedReturn = 0;
-      list.forEach((it) => {
-        const meta = fundsList.find((f) => f.fonKodu === it.fonKodu);
-        const r1y = meta?.getiri1y ?? 35;
-        const monthlyRate = Number(r1y) / 12;
-        weightedReturn += (monthlyRate * months * it.portfoyOrani) / 100;
-      });
-      pastValuationMultiplier = 1 / (1 + weightedReturn / 100);
     }
 
-    const estimatedPastVal = toplamDeger * pastValuationMultiplier;
-    const pastDiffTL = toplamDeger - estimatedPastVal;
-    const pastDiffPct = estimatedPastVal > 0 ? (pastDiffTL / estimatedPastVal) * 100 : 0;
+    const pastDiffTL = toplamDeger - realPastVal;
+    const pastDiffPct = realPastVal > 0 ? (pastDiffTL / realPastVal) * 100 : 0;
+    const resolvedDateStr = Array.from(resolvedDatesSet)[0] || targetHistoricalDate || '';
 
     return {
       calculatedHoldings: list,
@@ -228,13 +305,25 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({
       },
       categoryAllocation,
       historicalMetrics: {
-        estimatedPastVal,
+        estimatedPastVal: realPastVal,
         pastDiffTL,
         pastDiffPct,
         periodLabel,
+        resolvedDateStr,
+        isLoaded: !isLoadingHistorical && (valuationDate === 'today' || Object.keys(historicalPricesMap).length > 0),
       },
     };
-  }, [holdings, fundsList, latestPricesMap, dailyChangesMap, valuationDate, customDate]);
+  }, [
+    holdings,
+    fundsList,
+    latestPricesMap,
+    dailyChangesMap,
+    valuationDate,
+    customDate,
+    historicalPricesMap,
+    isLoadingHistorical,
+    targetHistoricalDate,
+  ]);
 
   const isProfit = summary.toplamKarZararTL >= 0;
 
@@ -305,20 +394,9 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({
 
         {/* Stopaj Hesaplanmış Net Kâr / Zarar (TL) */}
         <div className="bg-slate-900/70 border border-slate-800 rounded-xl p-3 sm:p-4">
-          <div className="flex items-center justify-between">
-            <span className="text-[10px] sm:text-[11px] tabular-nums uppercase text-slate-400">
-              Stopaj Hesaplanmış Net Kâr
-            </span>
-            {summary.toplamTahminiStopajTL > 0 ? (
-              <span className="text-[9px] px-1.5 py-0.2 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 font-bold tabular-nums">
-                -%17,5 Stopaj
-              </span>
-            ) : (
-              <span className="text-[9px] px-1.5 py-0.2 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-bold">
-                %0 Muaf
-              </span>
-            )}
-          </div>
+          <span className="text-[10px] sm:text-[11px] tabular-nums uppercase text-slate-400">
+            Stopaj Hesaplanmış Net Kâr
+          </span>
           <div
             className={`text-lg sm:text-2xl font-black tabular-nums mt-0.5 ${
               summary.stopajSonrasiNetKarTL >= 0 ? 'text-emerald-400' : 'text-rose-400'
@@ -416,34 +494,65 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({
 
         {/* Historical comparison metrics */}
         {valuationDate !== 'today' && (
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 pt-2 border-t border-slate-800/60 text-xs tabular-nums">
-            <div className="bg-slate-950/50 p-2 rounded-lg border border-slate-800/80">
-              <span className="text-[10px] text-slate-400 block">{historicalMetrics.periodLabel} Değeri</span>
-              <span className="text-white font-bold text-sm">
-                ₺{historicalMetrics.estimatedPastVal.toLocaleString('tr-TR', { maximumFractionDigits: 0 })}
-              </span>
-            </div>
-            <div className="bg-slate-950/50 p-2 rounded-lg border border-slate-800/80">
-              <span className="text-[10px] text-slate-400 block">O Günden Bugüne Getiri</span>
-              <span
-                className={`font-bold text-sm flex items-center ${
-                  historicalMetrics.pastDiffTL >= 0 ? 'text-emerald-400' : 'text-rose-400'
-                }`}
-              >
-                {historicalMetrics.pastDiffTL >= 0 ? '+' : ''}₺
-                {historicalMetrics.pastDiffTL.toLocaleString('tr-TR', { maximumFractionDigits: 0 })}
-              </span>
-            </div>
-            <div className="col-span-2 sm:col-span-1 bg-slate-950/50 p-2 rounded-lg border border-slate-800/80">
-              <span className="text-[10px] text-slate-400 block">Dönemsel Büyüme Oranı</span>
-              <span
-                className={`font-bold text-sm ${
-                  historicalMetrics.pastDiffPct >= 0 ? 'text-emerald-400' : 'text-rose-400'
-                }`}
-              >
-                {historicalMetrics.pastDiffPct >= 0 ? '+' : ''}%{historicalMetrics.pastDiffPct.toFixed(2)}
-              </span>
-            </div>
+          <div className="pt-2 border-t border-slate-800/60">
+            {isLoadingHistorical ? (
+              <div className="py-4 flex flex-col items-center justify-center gap-1.5 text-xs text-emerald-400">
+                <Loader2 className="w-5 h-5 animate-spin" />
+                <span className="font-semibold">Takasbank TEFAS resmi geçmiş kapanış fiyatları alınıyor...</span>
+                <span className="text-[10px] text-slate-500">Portföyünüzdeki fonların o günkü gerçek birim fiyatları sorgulanıyor</span>
+              </div>
+            ) : historicalError ? (
+              <div className="py-2.5 px-3 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs">
+                {historicalError}
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-[11px] text-slate-400">
+                  <span className="flex items-center gap-1.5 text-emerald-400 font-semibold">
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    <span>%100 Gerçek TEFAS Kapanış Fiyatları</span>
+                  </span>
+                  {historicalMetrics.resolvedDateStr && (
+                    <span className="text-slate-400 tabular-nums">
+                      Kapanış Tarihi: <strong className="text-slate-200">{historicalMetrics.resolvedDateStr}</strong>
+                    </span>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs tabular-nums">
+                  <div className="bg-slate-950/50 p-2.5 rounded-lg border border-slate-800/80">
+                    <span className="text-[10px] text-slate-400 block">{historicalMetrics.periodLabel} Portföy Değeri</span>
+                    <span className="text-white font-black text-sm">
+                      ₺{historicalMetrics.estimatedPastVal.toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                    <span className="text-[9px] text-slate-500 block mt-0.5">Resmi TEFAS Kapanış Değeri</span>
+                  </div>
+                  <div className="bg-slate-950/50 p-2.5 rounded-lg border border-slate-800/80">
+                    <span className="text-[10px] text-slate-400 block">O Günden Bugüne Getiri</span>
+                    <span
+                      className={`font-black text-sm flex items-center ${
+                        historicalMetrics.pastDiffTL >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                      }`}
+                    >
+                      {historicalMetrics.pastDiffTL >= 0 ? '+' : ''}₺
+                      {historicalMetrics.pastDiffTL.toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                    <span className="text-[9px] text-slate-500 block mt-0.5">Fark (TL)</span>
+                  </div>
+                  <div className="col-span-2 sm:col-span-1 bg-slate-950/50 p-2.5 rounded-lg border border-slate-800/80">
+                    <span className="text-[10px] text-slate-400 block">Dönemsel Büyüme Oranı</span>
+                    <span
+                      className={`font-black text-sm ${
+                        historicalMetrics.pastDiffPct >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                      }`}
+                    >
+                      {historicalMetrics.pastDiffPct >= 0 ? '+' : ''}%{historicalMetrics.pastDiffPct.toFixed(2)}
+                    </span>
+                    <span className="text-[9px] text-slate-500 block mt-0.5">Dönem Getirisi</span>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -580,7 +689,7 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({
                   <div className="flex items-center gap-2.5 min-w-0 flex-1 pr-2">
                     <FundCompanyLogo fonKodu={item.fonKodu} fonUnvan={item.fonUnvan} size="md" />
                     <div className="min-w-0">
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex items-center gap-1.5 flex-wrap">
                         <button
                           onClick={() => onSelectFundForAnalysis(item.fonKodu)}
                           className="font-black text-white text-sm hover:text-emerald-400 tabular-nums transition-colors cursor-pointer"
@@ -597,8 +706,16 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({
                         >
                           {itemTaxInfo.label}
                         </span>
+                        {item.priceDate && (
+                          <span
+                            className="text-[9px] px-1.5 py-0.2 rounded bg-slate-800 text-emerald-400 border border-slate-700/60 tabular-nums font-semibold shrink-0"
+                            title={`Güncel TEFAS borsa kapanış fiyat tarihi: ${formatPriceDate(item.priceDate)}`}
+                          >
+                            {formatPriceDate(item.priceDate)} Fiyatı
+                          </span>
+                        )}
                       </div>
-                      <div className="text-[11px] text-slate-400 font-medium truncate max-w-[170px]">
+                      <div className="text-[11px] text-slate-400 font-medium truncate max-w-[170px] mt-0.5">
                         {item.fonUnvan}
                       </div>
                     </div>
@@ -641,13 +758,30 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({
 
                 {/* Sub-row: Share count, price & actions */}
                 <div className="flex items-center justify-between pt-2 mt-2 border-t border-slate-800/60 text-[10px] tabular-nums text-slate-400">
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2.5 flex-wrap">
                     <span>
                       Pay: <strong className="text-slate-200">{item.adet.toLocaleString('tr-TR')}</strong>
                     </span>
                     <span>
                       Fiyat: <strong className="text-slate-200">₺{item.guncelFiyat.toFixed(4)}</strong>
+                      {item.priceDate && (
+                        <span className="text-[9px] text-emerald-400/90 ml-1 font-medium">({formatPriceDate(item.priceDate)})</span>
+                      )}
                     </span>
+                    {valuationDate !== 'today' && typeof item.historicalPrice === 'number' && (
+                      <span className="text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
+                        O Gün: <strong className="text-emerald-300">₺{item.historicalPrice.toFixed(4)}</strong>
+                        {typeof item.historicalDiffPct === 'number' && (
+                          <span
+                            className={`ml-1 font-bold ${
+                              item.historicalDiffPct >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                            }`}
+                          >
+                            ({item.historicalDiffPct >= 0 ? '+' : ''}%{item.historicalDiffPct.toFixed(1)})
+                          </span>
+                        )}
+                      </span>
+                    )}
                   </div>
 
                   <div className="flex items-center gap-2">
@@ -710,7 +844,7 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({
                       <div className="flex items-center gap-2.5">
                         <FundCompanyLogo fonKodu={item.fonKodu} fonUnvan={officialUnvan} size="sm" />
                         <div>
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-2 flex-wrap">
                             <button
                               onClick={() => onSelectFundForAnalysis(item.fonKodu)}
                               className="font-bold text-white hover:text-emerald-400 transition-colors cursor-pointer text-sm tabular-nums"
@@ -727,6 +861,14 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({
                             >
                               {itemTaxInfo.label}
                             </span>
+                            {item.priceDate && (
+                              <span
+                                className="text-[9px] px-1.5 py-0.5 rounded bg-slate-800 text-emerald-400 border border-slate-700/60 tabular-nums font-semibold shrink-0"
+                                title={`Güncel TEFAS borsa kapanış fiyat tarihi: ${formatPriceDate(item.priceDate)}`}
+                              >
+                                {formatPriceDate(item.priceDate)} Fiyatı
+                              </span>
+                            )}
                           </div>
                           <div className="text-[11px] text-slate-400 font-sans truncate max-w-xs mt-0.5">
                             {officialUnvan}
@@ -740,12 +882,32 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({
                     </td>
 
                     <td className="py-2.5 px-3 text-right">
-                      <div className="text-white font-semibold">
-                        ₺{item.guncelFiyat.toFixed(4)}
+                      <div className="text-white font-semibold flex items-center justify-end gap-1">
+                        <span>₺{item.guncelFiyat.toFixed(4)}</span>
+                        {item.priceDate && (
+                          <span className="text-[10px] text-emerald-400/90 font-normal tabular-nums">
+                            ({formatPriceDate(item.priceDate)})
+                          </span>
+                        )}
                       </div>
-                      <div className="text-[10px] text-slate-500">
-                        Maliyet: ₺{item.alisFiyati.toFixed(4)}
-                      </div>
+                      {valuationDate !== 'today' && typeof item.historicalPrice === 'number' ? (
+                        <div className="text-[10px] text-emerald-400 font-medium">
+                          O Gün: ₺{item.historicalPrice.toFixed(4)}
+                          {typeof item.historicalDiffPct === 'number' && (
+                            <span
+                              className={`ml-1 font-bold ${
+                                item.historicalDiffPct >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                              }`}
+                            >
+                              ({item.historicalDiffPct >= 0 ? '+' : ''}%{item.historicalDiffPct.toFixed(1)})
+                            </span>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="text-[10px] text-slate-500">
+                          Maliyet: ₺{item.alisFiyati.toFixed(4)}
+                        </div>
+                      )}
                     </td>
 
                     <td className="py-2.5 px-3 text-right font-bold text-white">

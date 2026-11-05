@@ -157,6 +157,103 @@ function parseTefasDate(raw) {
   return new Date(s);
 }
 
+async function resolveFundPriceOnDate(cleanCode, targetYMD) {
+  const nowMs = Date.now();
+  const targetMs = new Date(targetYMD).getTime();
+  const diffDays = Math.max(1, Math.ceil((nowMs - targetMs) / (1000 * 3600 * 24)));
+
+  let period = 1;
+  if (diffDays > 25) period = 3;
+  if (diffDays > 85) period = 6;
+  if (diffDays > 175) period = 12;
+  if (diffDays > 360) period = 36;
+  if (diffDays > 1050) period = 60;
+
+  let data = await callTefasApi('fonFiyatBilgiGetir', {
+    fonKodu: cleanCode,
+    dil: 'TR',
+    periyod: period,
+  });
+
+  let list = data?.resultList || [];
+  let validList = list.filter((item) => Number(item.fiyat) > 0);
+
+  if (validList.length > 0) {
+    validList.sort((a, b) => parseTefasDate(a.tarih).getTime() - parseTefasDate(b.tarih).getTime());
+    const earliestDateYMD = parseTefasDate(validList[0].tarih).toISOString().split('T')[0];
+    if (targetYMD < earliestDateYMD && period < 60) {
+      data = await callTefasApi('fonFiyatBilgiGetir', {
+        fonKodu: cleanCode,
+        dil: 'TR',
+        periyod: 60,
+      });
+      list = data?.resultList || [];
+      validList = list.filter((item) => Number(item.fiyat) > 0);
+      validList.sort((a, b) => parseTefasDate(a.tarih).getTime() - parseTefasDate(b.tarih).getTime());
+    }
+  }
+
+  if (validList.length === 0) {
+    if (list.length > 0) {
+      validList = list;
+    } else {
+      return null;
+    }
+  }
+
+  validList.sort((a, b) => parseTefasDate(a.tarih).getTime() - parseTefasDate(b.tarih).getTime());
+
+  const latestItem = validList[validList.length - 1];
+  const latestPrice = Number(latestItem.fiyat);
+  const latestDateYMD = parseTefasDate(latestItem.tarih).toISOString().split('T')[0];
+
+  if (targetYMD >= latestDateYMD) {
+    return {
+      fonKodu: cleanCode,
+      requestedDate: targetYMD,
+      resolvedDate: latestDateYMD,
+      price: latestPrice,
+      latestPrice,
+      isExactMatch: targetYMD === latestDateYMD,
+      isLatest: true,
+      fonUnvan: latestItem.fonUnvan || undefined,
+    };
+  }
+
+  let matchedItem = validList.find((item) => {
+    const d = parseTefasDate(item.tarih).toISOString().split('T')[0];
+    return d === targetYMD;
+  });
+
+  let isExactMatch = !!matchedItem;
+
+  if (!matchedItem) {
+    const onOrBefore = validList.filter((item) => {
+      const d = parseTefasDate(item.tarih).toISOString().split('T')[0];
+      return d <= targetYMD;
+    });
+    if (onOrBefore.length > 0) {
+      matchedItem = onOrBefore[onOrBefore.length - 1];
+    } else {
+      matchedItem = validList[0];
+    }
+  }
+
+  const price = Number(matchedItem.fiyat);
+  const resolvedDate = parseTefasDate(matchedItem.tarih).toISOString().split('T')[0];
+
+  return {
+    fonKodu: cleanCode,
+    requestedDate: targetYMD,
+    resolvedDate,
+    price,
+    latestPrice,
+    isExactMatch,
+    isLatest: false,
+    fonUnvan: matchedItem.fonUnvan || latestItem.fonUnvan,
+  };
+}
+
 export default async function handler(req, res) {
   // CORS Headers
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -185,12 +282,49 @@ export default async function handler(req, res) {
       : '';
     const url = req.url || '';
 
+    // Route 0: BATCH PRICE ON SPECIFIC DATE (/api/tefas/batch-price-on-date)
+    // Used by PortfolioView for 100% genuine Takasbank TEFAS historical portfolio valuation
+    if (
+      matchPath.includes('batch-price-on-date') ||
+      url.includes('batch-price-on-date') ||
+      (Array.isArray(body?.codes) && Boolean(body?.tarih))
+    ) {
+      const { codes = [], tarih } = body || req.query || {};
+      if (!Array.isArray(codes) || codes.length === 0) {
+        return res.status(200).json({ success: true, results: {} });
+      }
+
+      const todayYMD = new Date().toISOString().split('T')[0];
+      const targetYMD = tarih && String(tarih).trim().length === 10 ? String(tarih).trim() : todayYMD;
+      const cleanCodes = Array.from(new Set(codes.map((c) => String(c).toUpperCase().trim())));
+
+      const results = {};
+      await Promise.all(
+        cleanCodes.map(async (code) => {
+          try {
+            const resObj = await resolveFundPriceOnDate(code, targetYMD);
+            if (resObj) {
+              results[code] = resObj;
+            }
+          } catch (e) {
+            // ignore individual errors
+          }
+        })
+      );
+
+      return res.status(200).json({
+        success: true,
+        requestedDate: targetYMD,
+        results,
+      });
+    }
+
     // Route 1: PRICE ON SPECIFIC DATE (/api/tefas/price-on-date)
     // Used by PortfolioModal for automatic price lookup when adding a fund or selecting a past date
     if (
       matchPath.includes('price-on-date') ||
       url.includes('price-on-date') ||
-      Boolean(body?.tarih)
+      (Boolean(body?.fonKodu) && Boolean(body?.tarih))
     ) {
       const { fonKodu, tarih } = body || req.query || {};
       if (!fonKodu) {
@@ -201,101 +335,14 @@ export default async function handler(req, res) {
       const todayYMD = new Date().toISOString().split('T')[0];
       const targetYMD = tarih && String(tarih).trim().length === 10 ? String(tarih).trim() : todayYMD;
 
-      const nowMs = Date.now();
-      const targetMs = new Date(targetYMD).getTime();
-      const diffDays = Math.max(1, Math.ceil((nowMs - targetMs) / (1000 * 3600 * 24)));
-
-      let period = 1;
-      if (diffDays > 25) period = 3;
-      if (diffDays > 85) period = 6;
-      if (diffDays > 175) period = 12;
-      if (diffDays > 360) period = 36;
-      if (diffDays > 1050) period = 60;
-
-      let data = await callTefasApi('fonFiyatBilgiGetir', {
-        fonKodu: cleanCode,
-        dil: 'TR',
-        periyod: period,
-      });
-
-      let list = data?.resultList || [];
-      let validList = list.filter((item) => Number(item.fiyat) > 0);
-
-      if (validList.length > 0) {
-        validList.sort((a, b) => parseTefasDate(a.tarih).getTime() - parseTefasDate(b.tarih).getTime());
-        const earliestDateYMD = parseTefasDate(validList[0].tarih).toISOString().split('T')[0];
-        if (targetYMD < earliestDateYMD && period < 60) {
-          data = await callTefasApi('fonFiyatBilgiGetir', {
-            fonKodu: cleanCode,
-            dil: 'TR',
-            periyod: 60,
-          });
-          list = data?.resultList || [];
-          validList = list.filter((item) => Number(item.fiyat) > 0);
-          validList.sort((a, b) => parseTefasDate(a.tarih).getTime() - parseTefasDate(b.tarih).getTime());
-        }
+      const result = await resolveFundPriceOnDate(cleanCode, targetYMD);
+      if (!result) {
+        return res.status(200).json({ success: false, message: 'Bu fon için fiyat verisi bulunamadı.' });
       }
-
-      if (validList.length === 0) {
-        if (list.length > 0) {
-          validList = list;
-        } else {
-          return res.status(200).json({ success: false, message: 'Bu fon için fiyat verisi bulunamadı.' });
-        }
-      }
-
-      validList.sort((a, b) => parseTefasDate(a.tarih).getTime() - parseTefasDate(b.tarih).getTime());
-
-      const latestItem = validList[validList.length - 1];
-      const latestPrice = Number(latestItem.fiyat);
-      const latestDateYMD = parseTefasDate(latestItem.tarih).toISOString().split('T')[0];
-
-      if (targetYMD >= latestDateYMD) {
-        return res.status(200).json({
-          success: true,
-          fonKodu: cleanCode,
-          requestedDate: targetYMD,
-          resolvedDate: latestDateYMD,
-          price: latestPrice,
-          latestPrice,
-          isExactMatch: targetYMD === latestDateYMD,
-          isLatest: true,
-          fonUnvan: latestItem.fonUnvan || undefined,
-        });
-      }
-
-      let matchedItem = validList.find((item) => {
-        const d = parseTefasDate(item.tarih).toISOString().split('T')[0];
-        return d === targetYMD;
-      });
-
-      let isExactMatch = !!matchedItem;
-
-      if (!matchedItem) {
-        const onOrBefore = validList.filter((item) => {
-          const d = parseTefasDate(item.tarih).toISOString().split('T')[0];
-          return d <= targetYMD;
-        });
-        if (onOrBefore.length > 0) {
-          matchedItem = onOrBefore[onOrBefore.length - 1];
-        } else {
-          matchedItem = validList[0];
-        }
-      }
-
-      const price = Number(matchedItem.fiyat);
-      const resolvedDate = parseTefasDate(matchedItem.tarih).toISOString().split('T')[0];
 
       return res.status(200).json({
         success: true,
-        fonKodu: cleanCode,
-        requestedDate: targetYMD,
-        resolvedDate,
-        price,
-        latestPrice,
-        isExactMatch,
-        isLatest: false,
-        fonUnvan: matchedItem.fonUnvan || latestItem.fonUnvan,
+        ...result,
       });
     }
 
@@ -319,23 +366,30 @@ export default async function handler(req, res) {
             });
             const list = data?.resultList || [];
             if (list.length >= 2) {
-              const cur = Number(list[list.length - 1].fiyat);
-              const prev = Number(list[list.length - 2].fiyat);
+              const curItem = list[list.length - 1];
+              const prevItem = list[list.length - 2];
+              const cur = Number(curItem.fiyat);
+              const prev = Number(prevItem.fiyat);
               const diff = cur - prev;
               const pct = prev > 0 ? (diff / prev) * 100 : 0;
+              const pDate = parseTefasDate(curItem.tarih).toISOString().split('T')[0];
               results[code] = {
                 currentPrice: cur,
                 prevPrice: prev,
                 dailyChangeTL: diff,
                 dailyChangePercent: pct,
+                priceDate: pDate,
               };
             } else if (list.length === 1) {
-              const cur = Number(list[0].fiyat);
+              const curItem = list[0];
+              const cur = Number(curItem.fiyat);
+              const pDate = parseTefasDate(curItem.tarih).toISOString().split('T')[0];
               results[code] = {
                 currentPrice: cur,
                 prevPrice: cur,
                 dailyChangeTL: 0,
                 dailyChangePercent: 0,
+                priceDate: pDate,
               };
             }
           } catch (e) {

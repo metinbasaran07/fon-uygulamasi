@@ -1,8 +1,9 @@
 import React from 'react';
 import { FundAnalysisResult } from '../types/tefas';
-import { ArrowUpRight, ArrowDownRight, Plus, Percent, Award } from 'lucide-react';
+import { ArrowUpRight, ArrowDownRight, Plus, Percent, Award, Calendar } from 'lucide-react';
 import { getFundStopajInfo } from '../utils/taxEngine';
 import { FundCompanyLogo } from './FundCompanyLogo';
+import { formatPriceDate } from '../utils/dateFormatter';
 
 interface FundOverviewCardProps {
   fund: FundAnalysisResult;
@@ -36,6 +37,13 @@ export const FundOverviewCard: React.FC<FundOverviewCardProps> = ({
     : fallbackStopaj;
 
   const scoreBadgeColor = fund.scores.gradeColor || '#10b981';
+
+  // Determine latest TEFAS price date
+  const rawPriceDate =
+    fund.priceDate ||
+    fund.indicators.priceDate ||
+    fund.historySeries?.[fund.historySeries.length - 1]?.date;
+  const priceDateFormatted = formatPriceDate(rawPriceDate);
 
   return (
     <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-3 sm:p-4 shadow-sm">
@@ -104,6 +112,18 @@ export const FundOverviewCard: React.FC<FundOverviewCardProps> = ({
             <h2 className="text-xs sm:text-sm font-semibold text-slate-200 line-clamp-1">
               {fund.fonUnvan}
             </h2>
+
+            {/* Date badge showing which date current price belongs to */}
+            {priceDateFormatted && (
+              <span
+                className="text-[10px] px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 font-semibold tabular-nums flex items-center gap-1 shrink-0"
+                title={`TEFAS resmi birim fiyatının ait olduğu borsa kapanış tarihi: ${priceDateFormatted}`}
+              >
+                <Calendar className="w-2.5 h-2.5" />
+                <span>{priceDateFormatted} Fiyatı</span>
+              </span>
+            )}
+
             <span
               className="text-[10px] px-1.5 py-0.2 rounded font-medium border"
               style={{
@@ -119,7 +139,14 @@ export const FundOverviewCard: React.FC<FundOverviewCardProps> = ({
         {/* Price & Daily Return (Clean tabular sans-serif digits, no slashed zeros) */}
         <div className="flex items-center gap-3 bg-slate-950/60 px-3 py-1.5 sm:py-2 rounded-lg border border-slate-800 self-start sm:self-auto tabular-nums">
           <div>
-            <div className="text-[9px] uppercase font-semibold text-slate-400">Birim Fiyat</div>
+            <div className="text-[9px] uppercase font-semibold text-slate-400 flex items-center justify-between gap-1.5">
+              <span>Birim Fiyat</span>
+              {priceDateFormatted && (
+                <span className="text-[9px] text-emerald-400/90 font-medium tabular-nums lowercase">
+                  ({priceDateFormatted})
+                </span>
+              )}
+            </div>
             <div className="text-base sm:text-lg font-bold text-white tracking-tight">
               ₺
               {fund.indicators.currentPrice.toLocaleString('tr-TR', {

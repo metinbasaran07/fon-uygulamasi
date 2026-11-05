@@ -86,56 +86,72 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
       </header>
 
-      {/* Mobile Bottom Navigation Bar (No Overlapping, Perfect Touch Targets) */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-slate-950/95 border-t border-slate-800/90 backdrop-blur-lg px-2 py-1.5 shadow-2xl">
-        <div className="grid grid-cols-4 gap-1">
+      {/* Mobile Bottom Navigation Bar (Rock-solid fixed to viewport bottom, no detachment) */}
+      <nav
+        className="md:hidden fixed inset-x-0 bottom-0 z-40 w-full bg-[#090d16] border-t border-slate-800 shadow-[0_-4px_25px_rgba(0,0,0,0.6)] select-none"
+        style={{
+          transform: 'translate3d(0, 0, 0)',
+          WebkitTransform: 'translate3d(0, 0, 0)',
+          paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom, 0.5rem))',
+        }}
+      >
+        <div className="grid grid-cols-4 gap-1 px-2 pt-1.5 pb-1">
           <button
+            type="button"
             onClick={() => onTabChange('analysis')}
-            className={`flex flex-col items-center justify-center py-1.5 rounded-lg text-[10px] font-semibold transition-all cursor-pointer ${
+            className={`flex flex-col items-center justify-center py-2 px-1 rounded-xl text-[11px] font-semibold transition-all cursor-pointer ${
               activeTab === 'analysis'
-                ? 'text-emerald-400 bg-emerald-500/10'
-                : 'text-slate-400 hover:text-slate-200'
+                ? 'text-emerald-400 bg-emerald-500/10 font-bold'
+                : 'text-slate-400 hover:text-slate-200 active:bg-slate-900'
             }`}
           >
-            <BarChart2 className="w-4 h-4 mb-0.5" />
+            <BarChart2 className={`w-5 h-5 mb-1 ${activeTab === 'analysis' ? 'text-emerald-400' : 'text-slate-400'}`} />
             <span>Analiz</span>
           </button>
 
           <button
+            type="button"
             onClick={() => onTabChange('portfolio')}
-            className={`flex flex-col items-center justify-center py-1.5 rounded-lg text-[10px] font-semibold transition-all relative cursor-pointer ${
+            className={`flex flex-col items-center justify-center py-2 px-1 rounded-xl text-[11px] font-semibold transition-all relative cursor-pointer ${
               activeTab === 'portfolio'
-                ? 'text-emerald-400 bg-emerald-500/10'
-                : 'text-slate-400 hover:text-slate-200'
+                ? 'text-emerald-400 bg-emerald-500/10 font-bold'
+                : 'text-slate-400 hover:text-slate-200 active:bg-slate-900'
             }`}
           >
-            <div className="flex flex-col items-center">
-              <PieChart className="w-4 h-4 mb-0.5" />
-              <span>Portföy</span>
+            <div className="relative">
+              <PieChart className={`w-5 h-5 mb-1 ${activeTab === 'portfolio' ? 'text-emerald-400' : 'text-slate-400'}`} />
+              {portfolioCount > 0 && (
+                <span className="absolute -top-1 -right-2 px-1 py-0.2 bg-emerald-500 text-slate-950 text-[9px] font-extrabold rounded-full min-w-[14px] text-center">
+                  {portfolioCount}
+                </span>
+              )}
             </div>
+            <span>Portföy</span>
           </button>
 
           <button
+            type="button"
             onClick={() => onTabChange('comparison')}
-            className={`flex flex-col items-center justify-center py-1.5 rounded-lg text-[10px] font-semibold transition-all cursor-pointer ${
+            className={`flex flex-col items-center justify-center py-2 px-1 rounded-xl text-[11px] font-semibold transition-all cursor-pointer ${
               activeTab === 'comparison'
-                ? 'text-emerald-400 bg-emerald-500/10'
-                : 'text-slate-400 hover:text-slate-200'
+                ? 'text-emerald-400 bg-emerald-500/10 font-bold'
+                : 'text-slate-400 hover:text-slate-200 active:bg-slate-900'
             }`}
           >
-            <GitCompare className="w-4 h-4 mb-0.5" />
+            <GitCompare className={`w-5 h-5 mb-1 ${activeTab === 'comparison' ? 'text-emerald-400' : 'text-slate-400'}`} />
             <span>Kıyas</span>
           </button>
 
           <button
+            type="button"
             onClick={() => onTabChange('chat')}
-            className={`flex flex-col items-center justify-center py-1.5 rounded-lg text-[10px] font-semibold transition-all cursor-pointer ${
+            className={`flex flex-col items-center justify-center py-2 px-1 rounded-xl text-[11px] font-semibold transition-all cursor-pointer ${
               activeTab === 'chat'
-                ? 'text-emerald-400 bg-emerald-500/10'
-                : 'text-slate-400 hover:text-slate-200'
+                ? 'text-emerald-400 bg-emerald-500/10 font-bold'
+                : 'text-slate-400 hover:text-slate-200 active:bg-slate-900'
             }`}
           >
-            <Sparkles className="w-4 h-4 mb-0.5" />
+            <Sparkles className={`w-5 h-5 mb-1 ${activeTab === 'chat' ? 'text-emerald-400' : 'text-slate-400'}`} />
             <span>AI Asistan</span>
           </button>
         </div>

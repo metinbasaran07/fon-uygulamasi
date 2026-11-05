@@ -37,6 +37,11 @@ export interface PortfolioHoldingCalculated extends PortfolioHolding {
   netDegerTL: number;
   gunlukDegisimTL: number; // Günlük fark TL (adet * günlük birim fiyat farkı)
   gunlukDegisimYuzde: number; // Günlük yüzde değişim (%)
+  priceDate?: string; // Latest TEFAS closing price date e.g. "2026-11-05"
+  historicalPrice?: number; // Real TEFAS price on chosen historical date
+  historicalResolvedDate?: string;
+  historicalDiffTL?: number;
+  historicalDiffPct?: number;
 }
 
 export interface PortfolioSummary {
